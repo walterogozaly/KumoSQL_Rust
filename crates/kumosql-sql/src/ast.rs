@@ -1116,6 +1116,25 @@ impl Query {
         }
     }
 
+    /// The `SELECT` body, when this query is a plain select.
+    pub fn as_select(&self) -> Option<&Select> {
+        match self {
+            Query::Select { body, .. } => Some(body),
+            _ => None,
+        }
+    }
+
+    /// The `SELECT` body, mutably, when this query is a plain select.
+    ///
+    /// A set operation and `VALUES` have no single body to hand back, so they
+    /// return `None` rather than a fabricated one.
+    pub fn as_select_mut(&mut self) -> Option<&mut Select> {
+        match self {
+            Query::Select { body, .. } => Some(body),
+            _ => None,
+        }
+    }
+
     /// Whether this query reads no tables at all: a `SELECT` of literals, or
     /// `VALUES` with no `WITH`.
     ///
