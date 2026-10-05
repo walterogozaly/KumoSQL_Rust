@@ -22,5 +22,7 @@
 pub mod ast;
 pub mod error;
 pub mod literals;
+pub mod rewrite;
+pub mod token;
 
 pub use literals::{canonical_literals, invalid_literal};
