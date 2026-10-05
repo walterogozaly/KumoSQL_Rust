@@ -19,6 +19,8 @@
 //Any construct the parser cannot read must produce an explicit, typed error.
 //Silently approximating an unsupported shape is a defect: the whole point of
 //this project is that a rewrite is either proven or reported as unproven.
+pub mod ast;
+pub mod error;
 pub mod literals;
 
 pub use literals::{canonical_literals, invalid_literal};

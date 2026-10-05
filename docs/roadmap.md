@@ -37,9 +37,20 @@ Status values: `todo`, `in progress`, `done`, `blocked`, `partial`.
 Task 2 has started. Ported so far:
 
 * **`string_literals`** (`kumosql-sql/src/literals.rs`) -- `canonical_literals`
-  and `invalid_literal`, from `src/kumosql/string_literals.py`. All 5 tests
-  pass, including idempotence and the 11 cases of the Python original's
-  `test_canonical_literals`.
+  and `invalid_literal`, from `src/kumosql/string_literals.py`.
+* **`error`** (`kumosql-sql/src/error.rs`) -- the typed errors that stand in for
+  `UnmodeledConstruct` and `LossySql`, plus the `Rejected` case. The kind is
+  what lets a caller separate "we cannot reason about this" from "this is not a
+  query", which are different claims.
+* **`ast`** (`kumosql-sql/src/ast.rs`) -- the syntax tree and its BigQuery
+  rendering. Enums rather than sqlglot's node classes, so an unhandled construct
+  is a compile error instead of a silently dropped node.
+
+25 tests pass. Four of the AST tests failed on first run and caught real
+problems: a renderer bug that put `ALL` on the left operand of a `UNION ALL`,
+and three test expectations of mine that were wrong (structural identifier
+equality is case-sensitive by design; `` `a` `` and `a` name the same table; and
+`"` is printable inside a bytes literal). All four are recorded in the tests.
 
 The case table is **generated**, not transcribed: `tools/dump_literal_cases.py`
 reads `tests/test_string_literals.py` out of the reference repo with `ast`,
@@ -52,9 +63,8 @@ The six prover- and DuckDB-dependent tests in that Python file are listed as
 `pending` in `crates/kumosql-sql/tests/literals.rs` with the task each needs,
 rather than dropped.
 
-Still to do for task 2: the AST types, the hybrid parse pipeline (token-level
-rewrites plus `sqlparser-rs` plus marker resolution), the renderer, and
-`parse_check`.
+Still to do for task 2: the hybrid parse pipeline (token-level rewrites plus
+`sqlparser-rs` plus marker resolution) and `parse_check`.
 
 ## Sequencing notes
 
