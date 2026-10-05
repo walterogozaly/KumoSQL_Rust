@@ -1171,6 +1171,20 @@ pub enum Query {
         /// A trailing `LIMIT`.
         limit: Option<Expr>,
     },
+    /// A query piped through one or more pipe operators: `FROM t |> WHERE ...`.
+    ///
+    /// A pipe is its own variant rather than a field on the others because a
+    /// stage changes what the query reads: `|> WHERE` filters, `|> DROP`
+    /// removes columns, `|> SET` adds one. A rule that ignored the stages
+    /// would be reasoning about a different query.
+    Pipe {
+        /// The `WITH` clause, when present.
+        with: Option<With>,
+        /// The query the pipe is attached to.
+        base: Box<Query>,
+        /// The stages, in order.
+        stages: Vec<PipeStage>,
+    },
     /// `VALUES (...), (...)`.
     Values {
         /// The `WITH` clause, when present.
@@ -1186,7 +1200,8 @@ impl Query {
         match self {
             Query::Select { with, .. }
             | Query::SetOperation { with, .. }
-            | Query::Values { with, .. } => with.as_ref(),
+            | Query::Values { with, .. }
+            | Query::Pipe { with, .. } => with.as_ref(),
         }
     }
 
@@ -1221,6 +1236,8 @@ impl Query {
                 with.is_none() && body.from.is_none() && body.selection.is_none()
             }
             Query::SetOperation { with, .. } => with.is_none(),
+            // A piped query is never constant: a stage changes what it reads.
+            Query::Pipe { .. } => false,
         }
     }
 }
@@ -1245,6 +1262,94 @@ impl fmt::Display for With {
     }
 }
 
+/// One stage of a pipe: `|> WHERE a = 1`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PipeStage {
+    /// `|> SELECT expr, ...`
+    Select(Vec<Expr>),
+    /// `|> EXTEND expr AS name, ...`
+    Extend(Vec<Expr>),
+    /// `|> SET name = value, ...`
+    Set(Vec<(Ident, Expr)>),
+    /// `|> DROP col, ...`
+    Drop(Vec<Ident>),
+    /// `|> AS alias`
+    As(Ident),
+    /// `|> WHERE predicate`
+    Where(Expr),
+    /// `|> LIMIT n [OFFSET m]`
+    Limit {
+        /// The row cap.
+        limit: Option<Expr>,
+        /// The offset.
+        offset: Option<Expr>,
+    },
+    /// `|> ORDER BY key, ...`
+    OrderBy(OrderBy),
+    /// A pipe operator outside the modelled subset, kept as written.
+    ///
+    /// `|> AGGREGATE`, `|> UNION`, `|> PIVOT` and the rest are declined for
+    /// reasoning but their text is preserved, so the query can still be
+    /// re-emitted and reported rather than silently truncated.
+    Other {
+        /// The operator keyword, as written.
+        keyword: String,
+        /// The operator's text, as written.
+        text: String,
+    },
+}
+
+impl PipeStage {
+    /// Whether this stage is one this port reasons about.
+    ///
+    /// A stage that is not modelled makes the whole piped query unmodelled: a
+    /// rule must not treat `|> AGGREGATE` as if it were not there.
+    pub fn is_modelled(&self) -> bool {
+        !matches!(self, PipeStage::Other { .. })
+    }
+
+    /// The keyword this stage is written with, for rendering.
+    pub fn keyword(&self) -> &str {
+        match self {
+            PipeStage::Select(_) => "SELECT",
+            PipeStage::Extend(_) => "EXTEND",
+            PipeStage::Set(_) => "SET",
+            PipeStage::Drop(_) => "DROP",
+            PipeStage::As(_) => "AS",
+            PipeStage::Where(_) => "WHERE",
+            PipeStage::Limit { .. } => "LIMIT",
+            PipeStage::OrderBy(_) => "ORDER BY",
+            PipeStage::Other { keyword, .. } => keyword,
+        }
+    }
+
+    /// The stage's arguments, as written.
+    pub fn arguments(&self) -> String {
+        match self {
+            PipeStage::Select(exprs) | PipeStage::Extend(exprs) => join_commas(exprs),
+            PipeStage::Set(assignments) => assignments
+                .iter()
+                .map(|(name, value)| format!("{name} = {value}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            PipeStage::Drop(columns) => join_idents(columns),
+            PipeStage::As(alias) => alias.to_string(),
+            PipeStage::Where(expr) => expr.to_string(),
+            PipeStage::Limit { limit, offset } => match (limit, offset) {
+                (Some(limit), Some(offset)) => format!("{limit} OFFSET {offset}"),
+                (Some(limit), None) => limit.to_string(),
+                (None, Some(offset)) => format!("OFFSET {offset}"),
+                (None, None) => String::new(),
+            },
+            PipeStage::OrderBy(order_by) => {
+                let keys: Vec<String> = order_by.keys.iter().map(|k| k.to_string()).collect();
+                keys.join(", ")
+            }
+            PipeStage::Other { text, .. } => text.clone(),
+        }
+    }
+}
+
 /// Renders a query with its `WITH` clause, which [`Query`]'s own `Display`
 /// cannot do because the clause lives in each variant.
 pub struct RenderQuery<'a>(pub &'a Query);
@@ -1263,6 +1368,13 @@ impl fmt::Display for RenderQuery<'_> {
                     .map(|row| format!("({})", join_commas(row)))
                     .collect();
                 write!(f, "VALUES {}", rendered.join(", "))
+            }
+            Query::Pipe { base, stages, .. } => {
+                write!(f, "{}", RenderQuery(base))?;
+                for stage in stages {
+                    write!(f, " |> {} {}", stage.keyword(), stage.arguments())?;
+                }
+                Ok(())
             }
             Query::SetOperation {
                 op,

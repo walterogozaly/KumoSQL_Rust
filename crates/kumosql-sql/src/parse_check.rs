@@ -369,6 +369,17 @@ fn collect_query_atoms(query: &Query, atoms: &mut BTreeMap<String, usize>) {
                 }
             }
         }
+        Query::Pipe {
+            with, base, stages, ..
+        } => {
+            collect_query_atoms(base, atoms);
+            if let Some(with) = with {
+                collect_with_atoms(with, atoms);
+            }
+            for stage in stages {
+                collect_pipe_stage_atoms(stage, atoms);
+            }
+        }
         Query::SetOperation {
             with,
             left,
@@ -387,6 +398,42 @@ fn collect_query_atoms(query: &Query, atoms: &mut BTreeMap<String, usize>) {
                 }
             }
         }
+    }
+}
+
+fn collect_pipe_stage_atoms(stage: &PipeStage, atoms: &mut BTreeMap<String, usize>) {
+    match stage {
+        PipeStage::Select(exprs) | PipeStage::Extend(exprs) => {
+            for expr in exprs {
+                collect_expr_atoms(expr, atoms);
+            }
+        }
+        PipeStage::Set(pairs) => {
+            for (name, value) in pairs {
+                add(atoms, &name.folded());
+                collect_expr_atoms(value, atoms);
+            }
+        }
+        PipeStage::Drop(columns) => {
+            for column in columns {
+                add(atoms, &column.folded());
+            }
+        }
+        PipeStage::As(alias) => add(atoms, &alias.folded()),
+        PipeStage::Where(expr) => collect_expr_atoms(expr, atoms),
+        PipeStage::OrderBy(order_by) => {
+            for key in &order_by.keys {
+                collect_expr_atoms(&key.expr, atoms);
+            }
+        }
+        PipeStage::Limit { limit, offset } => {
+            for expr in [limit, offset].into_iter().flatten() {
+                collect_expr_atoms(expr, atoms);
+            }
+        }
+        // An unmodelled stage keeps its text, so its names are not atoms the
+        // check can account for; the stage itself is what makes it unmodelled.
+        PipeStage::Other { .. } => {}
     }
 }
 

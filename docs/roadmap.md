@@ -11,7 +11,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`, `partial`.
 | # | Task | Status | Notes |
 | --- | --- | --- | --- |
 | 1 | `toolchain-workspace` | done | Rust 1.99.0 + VS Build Tools 2022 installed; 12 crates scaffolded; see [toolchain.md](toolchain.md) for the Application Control workaround |
-| 2 | `sql-ast-parser` | in progress | `string_literals` ported and passing (5 tests, 11 generated cases). AST, hybrid parse pipeline and renderer still to do |
+| 2 | `sql-ast-parser` | done | 144 tests. Literals, errors, AST + renderer, tokenizer, rewrites, parse pipeline, `GROUP BY ALL`, script splitting, `parse_check`, pipe operators |
 | 3 | `sqlx-and-scripts` | todo | |
 | 4 | `rule-framework` | todo | |
 | 5 | `cleanup-rules` | todo | The nine documented rules |
@@ -157,9 +157,26 @@ Recorded as a known gap below.
   because "we could not look at this" is a different claim from "these differ",
   and `disagrees()` never reports the first as the second.
 
-132 tests pass in `kumosql-sql`.
+* **Pipe operators** -- `sqlparser` 0.59 models `|>` natively, including `SET`
+  and `DROP`, so unlike the Python original this needs **no text rewrite**: each
+  stage becomes a node and a piped query is its own `Query::Pipe`. The modelled
+  stages are `SELECT`, `EXTEND`, `SET`, `DROP`, `AS`, `WHERE`, `LIMIT` and
+  `ORDER BY`; `AGGREGATE`, `UNION`, `PIVOT` and the rest keep their text and are
+  reported unmodelled, so a rule refuses a piped query rather than reasoning
+  about a stage it dropped.
 
-Still to do for task 2: the pipe operator rewrites.
+144 tests pass in `kumosql-sql`. **Task 2 is complete.**
+
+### What task 2 deliberately does not do
+
+- **No recovery fallback.** `parse_statements(sql, recover = true)` returns an
+  error saying so rather than a partial result, because a partial result looks
+  like success. The Python original has a real recovery path; this does not yet.
+- **`check_query` runs on the rewritten text**, not the source, so that markers
+  and canonicalised literals do not read as disagreements. The Python original
+  declines such queries as unchecked instead. `ParseCheck::note` says which.
+- **`DROP TABLE FUNCTION` and a table function in FROM are declined**, both
+  because `sqlparser` cannot represent them; see the open risks below.
 
 The script tests are ported from `tests/test_scripts.py` **with its exact
 expected statement texts and conditional flags**, because a splitter one

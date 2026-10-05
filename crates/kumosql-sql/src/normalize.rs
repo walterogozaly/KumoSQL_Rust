@@ -725,6 +725,36 @@ pub fn expand_group_by_all_in_query(query: &mut Query) -> Result<()> {
                 }
             }
         }
+        Query::Pipe { with, base, stages } => {
+            expand_group_by_all_in_with(with)?;
+            expand_group_by_all_in_query(base)?;
+            for stage in stages {
+                match stage {
+                    PipeStage::Select(exprs) | PipeStage::Extend(exprs) => {
+                        for expr in exprs {
+                            expand_group_by_all_in_expr(expr);
+                        }
+                    }
+                    PipeStage::Set(pairs) => {
+                        for (_, value) in pairs {
+                            expand_group_by_all_in_expr(value);
+                        }
+                    }
+                    PipeStage::Where(expr) => expand_group_by_all_in_expr(expr),
+                    PipeStage::OrderBy(order_by) => {
+                        for key in &mut order_by.keys {
+                            expand_group_by_all_in_expr(&mut key.expr);
+                        }
+                    }
+                    PipeStage::Limit { limit, offset } => {
+                        for expr in [limit, offset].into_iter().flatten() {
+                            expand_group_by_all_in_expr(expr);
+                        }
+                    }
+                    PipeStage::Drop(_) | PipeStage::As(_) | PipeStage::Other { .. } => {}
+                }
+            }
+        }
         Query::SetOperation {
             with, left, right, ..
         } => {

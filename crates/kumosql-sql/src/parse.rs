@@ -127,6 +127,17 @@ fn query_mentions_table_argument(query: &Query) -> bool {
                         .any(|c| query_mentions_table_argument(&c.query))
                 })
         }
+        Query::Pipe {
+            with, base, stages, ..
+        } => {
+            query_mentions_table_argument(base)
+                || stages.iter().any(pipe_stage_mentions_table_argument)
+                || with.as_ref().is_some_and(|w| {
+                    w.ctes
+                        .iter()
+                        .any(|c| query_mentions_table_argument(&c.query))
+                })
+        }
         Query::SetOperation {
             with, left, right, ..
         } => {
@@ -142,6 +153,16 @@ fn query_mentions_table_argument(query: &Query) -> bool {
 }
 
 /// Whether `expr` holds a `TABLE` argument anywhere inside it.
+fn pipe_stage_mentions_table_argument(stage: &PipeStage) -> bool {
+    match stage {
+        PipeStage::Select(exprs) | PipeStage::Extend(exprs) => exprs.iter().any(is_table_arg),
+        PipeStage::Set(pairs) => pairs.iter().any(|(_, value)| is_table_arg(value)),
+        PipeStage::Where(expr) => is_table_arg(expr),
+        PipeStage::OrderBy(order_by) => order_by.keys.iter().any(|k| is_table_arg(&k.expr)),
+        _ => false,
+    }
+}
+
 fn is_table_arg(expr: &Expr) -> bool {
     match expr {
         Expr::TableArg(_) => true,
@@ -313,6 +334,35 @@ fn render_assignments(assignments: &[sp::Assignment]) -> String {
 
 fn convert_query(query: &sp::Query) -> Result<Query> {
     let with = query.with.as_ref().map(convert_with).transpose()?;
+
+    // `sqlparser` models pipe operators natively, so they need no text rewrite:
+    // each stage becomes a node and a piped query is its own query kind.
+    if !query.pipe_operators.is_empty() {
+        let stages = query
+            .pipe_operators
+            .iter()
+            .map(convert_pipe_stage)
+            .collect::<Result<Vec<_>>>()?;
+        let mut base = sp::Query {
+            with: query.with.clone(),
+            body: query.body.clone(),
+            order_by: query.order_by.clone(),
+            limit_clause: query.limit_clause.clone(),
+            fetch: None,
+            locks: Vec::new(),
+            for_clause: None,
+            settings: None,
+            format_clause: None,
+            pipe_operators: Vec::new(),
+        };
+        base.with = None;
+        let converted = convert_query(&base)?;
+        return Ok(Query::Pipe {
+            with,
+            base: Box::new(converted),
+            stages,
+        });
+    }
     let order_by = query.order_by.as_ref().map(convert_order_by).transpose()?;
     let limit = convert_limit(&query.limit_clause)?;
 
@@ -366,6 +416,92 @@ fn convert_query(query: &sp::Query) -> Result<Query> {
             ErrorKind::Unmodeled,
             format!("query body {other:?} is outside the modelled subset"),
         )),
+    }
+}
+
+/// Convert one pipe operator.
+///
+/// The modelled stages become nodes; the rest keep their text and are reported
+/// as unmodelled by [`PipeStage::is_modelled`], so a rule can refuse a piped
+/// query rather than silently reason about a stage it dropped.
+fn convert_pipe_stage(operator: &sp::PipeOperator) -> Result<PipeStage> {
+    Ok(match operator {
+        sp::PipeOperator::Select { exprs } => PipeStage::Select(convert_select_items(exprs)?),
+        sp::PipeOperator::Extend { exprs } => PipeStage::Extend(convert_select_items(exprs)?),
+        sp::PipeOperator::Set { assignments } => {
+            let mut pairs = Vec::with_capacity(assignments.len());
+            for assignment in assignments {
+                let sp::AssignmentTarget::ColumnName(name) = &assignment.target else {
+                    return Err(Error::new(
+                        ErrorKind::Unmodeled,
+                        format!(
+                            "a |> SET target must name a column, got {:?}",
+                            assignment.target
+                        ),
+                    ));
+                };
+                let column = name
+                    .0
+                    .first()
+                    .map(convert_object_name_part)
+                    .ok_or_else(|| {
+                        Error::new(ErrorKind::Unmodeled, "a |> SET target names no column")
+                    })?;
+                pairs.push((column, convert_expr(&assignment.value)?));
+            }
+            PipeStage::Set(pairs)
+        }
+        sp::PipeOperator::Drop { columns } => {
+            PipeStage::Drop(columns.iter().map(convert_ident).collect())
+        }
+        sp::PipeOperator::As { alias } => PipeStage::As(convert_ident(alias)),
+        sp::PipeOperator::Where { expr } => PipeStage::Where(convert_expr(expr)?),
+        sp::PipeOperator::Limit { expr, offset } => PipeStage::Limit {
+            limit: Some(convert_expr(expr)?),
+            offset: match offset {
+                Some(offset) => Some(convert_expr(offset)?),
+                None => None,
+            },
+        },
+        sp::PipeOperator::OrderBy { exprs } => {
+            let mut keys = Vec::with_capacity(exprs.len());
+            for expr in exprs {
+                keys.push(OrderKey {
+                    expr: convert_expr(&expr.expr)?,
+                    descending: Some(expr.options.asc == Some(false)),
+                    nulls: expr.options.nulls_first,
+                });
+            }
+            PipeStage::OrderBy(OrderBy { keys })
+        }
+        other => PipeStage::Other {
+            keyword: pipe_keyword(other).to_string(),
+            text: other.to_string(),
+        },
+    })
+}
+
+/// The keyword `sqlparser` would write a pipe operator with.
+fn pipe_keyword(operator: &sp::PipeOperator) -> &'static str {
+    match operator {
+        sp::PipeOperator::Limit { .. } => "LIMIT",
+        sp::PipeOperator::Where { .. } => "WHERE",
+        sp::PipeOperator::OrderBy { .. } => "ORDER BY",
+        sp::PipeOperator::Select { .. } => "SELECT",
+        sp::PipeOperator::Extend { .. } => "EXTEND",
+        sp::PipeOperator::Set { .. } => "SET",
+        sp::PipeOperator::Drop { .. } => "DROP",
+        sp::PipeOperator::As { .. } => "AS",
+        sp::PipeOperator::Aggregate { .. } => "AGGREGATE",
+        sp::PipeOperator::TableSample { .. } => "TABLESAMPLE",
+        sp::PipeOperator::Rename { .. } => "RENAME",
+        sp::PipeOperator::Union { .. } => "UNION",
+        sp::PipeOperator::Intersect { .. } => "INTERSECT",
+        sp::PipeOperator::Except { .. } => "EXCEPT",
+        sp::PipeOperator::Call { .. } => "CALL",
+        sp::PipeOperator::Pivot { .. } => "PIVOT",
+        sp::PipeOperator::Unpivot { .. } => "UNPIVOT",
+        sp::PipeOperator::Join(_) => "JOIN",
     }
 }
 
@@ -587,6 +723,10 @@ fn convert_with(with: &sp::With) -> Result<With> {
             })
             .collect::<Result<Vec<_>>>()?,
     })
+}
+
+fn convert_select_items(items: &[sp::SelectItem]) -> Result<Vec<Expr>> {
+    items.iter().map(convert_select_item).collect()
 }
 
 fn convert_select_item(item: &sp::SelectItem) -> Result<Expr> {
