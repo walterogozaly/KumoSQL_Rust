@@ -11,7 +11,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`, `partial`.
 | # | Task | Status | Notes |
 | --- | --- | --- | --- |
 | 1 | `toolchain-workspace` | done | Rust 1.99.0 + VS Build Tools 2022 installed; 12 crates scaffolded; see [toolchain.md](toolchain.md) for the Application Control workaround |
-| 2 | `sql-ast-parser` | todo | Hybrid `sqlparser-rs` + BigQuery extensions |
+| 2 | `sql-ast-parser` | in progress | `string_literals` ported and passing (5 tests, 11 generated cases). AST, hybrid parse pipeline and renderer still to do |
 | 3 | `sqlx-and-scripts` | todo | |
 | 4 | `rule-framework` | todo | |
 | 5 | `cleanup-rules` | todo | The nine documented rules |
@@ -34,10 +34,27 @@ Status values: `todo`, `in progress`, `done`, `blocked`, `partial`.
 
 ## What has actually landed
 
-Nothing functional yet. As of 2026-10-05 the repository contains the workspace,
-12 empty crate skeletons with documented responsibilities, the build/toolchain
-documentation, and no ported behaviour. No rewrite runs, no proof is attempted,
-and no benchmark number in this repository means anything yet.
+Task 2 has started. Ported so far:
+
+* **`string_literals`** (`kumosql-sql/src/literals.rs`) -- `canonical_literals`
+  and `invalid_literal`, from `src/kumosql/string_literals.py`. All 5 tests
+  pass, including idempotence and the 11 cases of the Python original's
+  `test_canonical_literals`.
+
+The case table is **generated**, not transcribed: `tools/dump_literal_cases.py`
+reads `tests/test_string_literals.py` out of the reference repo with `ast`,
+renders each case as a Rust literal, and self-checks the whole table against the
+Python implementation before writing it. A mismatch in the Rust tests therefore
+means the port is wrong, not the table. Hand-transcribing the cases corrupted two
+of them on the first attempt, which is why the generator exists.
+
+The six prover- and DuckDB-dependent tests in that Python file are listed as
+`pending` in `crates/kumosql-sql/tests/literals.rs` with the task each needs,
+rather than dropped.
+
+Still to do for task 2: the AST types, the hybrid parse pipeline (token-level
+rewrites plus `sqlparser-rs` plus marker resolution), the renderer, and
+`parse_check`.
 
 ## Sequencing notes
 

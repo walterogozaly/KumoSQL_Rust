@@ -87,3 +87,6 @@ ported or explicitly declared unported with a reason.
 | Date | Entry |
 | --- | --- |
 | 2026-10-05 | Repository created. Workspace and 12 crate skeletons in place. No behaviour ported yet. |
+| 2026-10-05 | Ported `string_literals` (task 2, partial). `canonical_literals` and `invalid_literal` match the Python original on all 11 of its own cases. |
+| 2026-10-05 | **Method note.** Test cases are generated from the reference repo, never transcribed by hand. `tools/dump_literal_cases.py` parses the Python test file with `ast` and self-checks each case against the Python implementation. Hand-transcribing `tests/test_string_literals.py` corrupted two cases silently -- `Rb'q\"'` lost its backslash, and `SELECT "a\"b", "x\"` lost its trailing one. Both produced plausible-looking but wrong test data. Any further ported test table should be generated the same way. |
+| 2026-10-05 | The Python original indexes `str` by character, and its literal scanning depends on that (a `\\` advances two characters). The Rust port scans a `Vec<char>` for that reason, so non-ASCII input behaves identically. A byte-slice port would have diverged. |
