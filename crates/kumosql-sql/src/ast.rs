@@ -573,7 +573,26 @@ impl fmt::Display for Expr {
                 aggregate,
                 predicate,
             } => {
-                write!(f, "{aggregate} FILTER (WHERE {predicate})")
+                // BigQuery spells an aggregate's filter inside the parentheses.
+                // Rendering the standard `FILTER (WHERE ...)` instead would be
+                // valid SQL but not BigQuery's spelling, and this node exists
+                // precisely because BigQuery's own form needed a rewrite to
+                // parse in the first place.
+                match aggregate.as_ref() {
+                    Expr::Function {
+                        name,
+                        args,
+                        distinct,
+                        star: false,
+                        ..
+                    } => {
+                        if matches!(distinct, DuplicateHandling::Distinct) {
+                            f.write_str("DISTINCT ")?;
+                        }
+                        write!(f, "{name}({} WHERE {predicate})", join_commas(args))
+                    }
+                    other => write!(f, "{other} FILTER (WHERE {predicate})"),
+                }
             }
             Expr::Case {
                 operand,
@@ -904,11 +923,11 @@ impl fmt::Display for TableFactor {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GroupBy {
     /// `GROUP BY ALL`, which groups by every projected non-aggregate.
-    all: bool,
+    pub all: bool,
     /// The keys, as written (positions included: `GROUP BY 1`).
-    keys: Vec<Expr>,
+    pub keys: Vec<Expr>,
     /// `ROLLUP(...)`, `CUBE(...)` or `GROUPING SETS(...)`.
-    grouping: Option<Grouping>,
+    pub grouping: Option<Grouping>,
 }
 
 /// A `ROLLUP`, `CUBE` or `GROUPING SETS` clause.

@@ -28,13 +28,14 @@
 use crate::error::{Error, Result};
 use crate::token::{TokenKind, tokenize};
 
-/// Marks the `FILTER` clause this module produced.
+/// The call the rewritten aggregate filter is parked in while the base parser
+/// reads it.
 ///
-/// Without it, a query that already used the standard `COUNT(x) FILTER (WHERE
-/// c)` would be indistinguishable from one this module had rewritten, and
-/// resolving would rewrite the user's own filter back. The Python original uses
-/// a marker for the same reason.
-const FILTER_MARKER: &str = "__KUMO_AGG_FILTER__";
+/// It must be a *call* rather than a bare name: a bare identifier reads as two
+/// adjacent tokens, and the base parser refuses that. It never reaches the AST
+/// -- [`crate::parse`] unwraps it back into the predicate -- so the marker is an
+/// internal parse trick, not a spelling of the query.
+pub(crate) const FILTER_MARKER: &str = "__KUMO_AGG_FILTER__";
 
 /// Words that are never an aggregate's name, even though a `(` follows them.
 ///
@@ -142,7 +143,7 @@ pub fn rewrite_aggregate_filters(sql: &str) -> Result<String> {
                 .to_string();
 
             out.push_str(&sql[cursor..args_end]);
-            out.push_str(&format!(") FILTER (WHERE {FILTER_MARKER} {predicate})"));
+            out.push_str(&format!(") FILTER (WHERE {FILTER_MARKER}({predicate}))"));
 
             // The original `)` is consumed here, so the copy resumes after it.
             cursor = tokens[close].span.end;
@@ -203,82 +204,21 @@ fn top_level_where(
 /// [`rewrite_aggregate_filters`].
 ///
 /// Idempotent: text that was never rewritten comes back unchanged.
-pub fn resolve_aggregate_filters(sql: &str) -> String {
-    let tokens = tokenize(sql);
-    let mut out = String::with_capacity(sql.len());
-    let mut cursor = 0usize;
-    let mut i = 0usize;
-
-    while i < tokens.len() {
-        // A `)` immediately followed by the `FILTER` keyword is one this module
-        // produced, and so is everything after it.
-        let is_ours = tokens[i].kind == TokenKind::RParen
-            && tokens
-                .get(i + 1)
-                .is_some_and(|t| t.is_keyword(sql, "FILTER"))
-            && tokens
-                .get(i + 2)
-                .is_some_and(|t| t.kind == TokenKind::LParen);
-
-        if !is_ours {
-            i += 1;
-            continue;
-        }
-
-        // The predicate runs from after `WHERE` to the parenthesis this module
-        // added.
-        let filter_open = i + 2;
-        let Some(where_at) =
-            (filter_open + 1..tokens.len()).find(|j| tokens[*j].is_keyword(sql, "WHERE"))
-        else {
-            i += 1;
-            continue;
-        };
-        let Some(filter_close) = matching_paren(&tokens, filter_open) else {
-            i += 1;
-            continue;
-        };
-
-        // Only touch a `FILTER` this module wrote. A user's own standard filter
-        // has no marker and must come back untouched.
-        let inside = &sql[tokens[where_at].span.end..tokens[filter_close].span.start];
-        let Some(predicate) = inside.split_once(FILTER_MARKER) else {
-            i += 1;
-            continue;
-        };
-        let predicate = predicate.1.trim().to_string();
-
-        // Re-emit the call up to its arguments, then BigQuery's own spelling.
-        out.push_str(&sql[cursor..tokens[i].span.start]);
-        out.push_str(&format!(" WHERE {predicate})"));
-
-        cursor = tokens[filter_close].span.end;
-        i = filter_close + 1;
-    }
-
-    out.push_str(&sql[cursor..]);
-    out
-}
-
 /// Whether `sql` reads `STRUCT<>` as the comparison `STRUCT <> ()`.
 ///
-/// `STRUCT<>` is not valid BigQuery, and a parser that reads it as a
-/// comparison would happily rewrite a query BigQuery rejects. This is the check
-/// `bigquery_syntax.py` performs with `_check_empty_struct`.
+/// `STRUCT<>` is not valid BigQuery, and a parser that read it as a comparison
+/// would happily rewrite a query BigQuery rejects. This is the check
+/// `_check_empty_struct` performs in the Python original.
 pub fn has_empty_struct(sql: &str) -> bool {
     let tokens = tokenize(sql);
     let text = |i: usize| tokens.get(i).map(|t| t.text(sql)).unwrap_or("");
-    for (i, token) in tokens.iter().enumerate() {
-        if token.is_keyword(sql, "STRUCT")
+    tokens.iter().enumerate().any(|(i, token)| {
+        token.is_keyword(sql, "STRUCT")
             && text(i + 1) == "<"
             && text(i + 2) == ">"
             && text(i + 3) == "("
             && text(i + 4) == ")"
-        {
-            return true;
-        }
-    }
-    false
+    })
 }
 
 /// Refuse `STRUCT<>()`, which is a comparison a generic parser invents.
@@ -296,11 +236,52 @@ pub fn reject_struct_comparison(sql: &str) -> Result<()> {
     Ok(())
 }
 
-/// Every BigQuery rewrite, in the order they are applied.
+/// `"text"` -> `'text'`, because BigQuery reads a double-quoted run as a
+/// string.
 ///
-/// Exposed so [`crate::parse`] and any caller that wants the same treatment
-/// apply them identically.
+/// `GenericDialect` reads `"x"` as a *quoted identifier* instead. This is the
+/// one place its reading of BigQuery is not merely a gap but the opposite of
+/// BigQuery's: ``SELECT "x"`` is a string in BigQuery and a column named `x`
+/// elsewhere, so a parse that trusted the dialect would model a different query.
+///
+/// Backslash handling is left to [`crate::literals::canonical_literals`], which
+/// runs afterwards and normalises escapes in either spelling.
+pub fn rewrite_double_quoted_strings(sql: &str) -> String {
+    let tokens = tokenize(sql);
+    let mut out = String::with_capacity(sql.len());
+    let mut cursor = 0usize;
+    for token in &tokens {
+        if token.kind != TokenKind::String {
+            continue;
+        }
+        let text = token.text(sql);
+        // Only a double-quoted run; single quotes and backticks are untouched.
+        if !text.starts_with('"') {
+            continue;
+        }
+        out.push_str(&sql[cursor..token.span.start]);
+        // Swap the delimiters, leaving the body (and its escapes) as written.
+        out.push('\'');
+        out.push_str(&text[1..text.len() - 1]);
+        out.push('\'');
+        cursor = token.span.end;
+    }
+    if cursor == 0 {
+        return sql.to_string();
+    }
+    out.push_str(&sql[cursor..]);
+    out
+}
+
+/// Rewrite the BigQuery shapes a generic parser cannot read, leaving the
+/// markers in place so the base parser can read the result.
+///
+/// The markers are resolved by [`resolve_all`] when the text is rendered back.
+/// They must **not** be resolved here: the parser runs in between, and
+/// resolving first would undo the rewrite before it was ever needed.
 pub fn rewrite_all(sql: &str) -> Result<String> {
     reject_struct_comparison(sql)?;
-    Ok(resolve_aggregate_filters(&rewrite_aggregate_filters(sql)?))
+    Ok(rewrite_double_quoted_strings(&rewrite_aggregate_filters(
+        sql,
+    )?))
 }

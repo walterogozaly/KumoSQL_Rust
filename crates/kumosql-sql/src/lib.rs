@@ -22,6 +22,7 @@
 pub mod ast;
 pub mod error;
 pub mod literals;
+pub mod parse;
 pub mod rewrite;
 pub mod token;
 

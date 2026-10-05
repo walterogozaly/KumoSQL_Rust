@@ -10,8 +10,7 @@
 
 use kumosql_sql::error::ErrorKind;
 use kumosql_sql::rewrite::{
-    has_empty_struct, reject_struct_comparison, resolve_aggregate_filters,
-    rewrite_aggregate_filters, rewrite_all,
+    has_empty_struct, reject_struct_comparison, rewrite_aggregate_filters, rewrite_all,
 };
 use kumosql_sql::token::{TokenKind, tokenize};
 
@@ -74,7 +73,7 @@ fn the_aggregate_filter_is_rewritten_to_the_standard_form() {
     // rewrite apart from a `FILTER` the query already had.
     assert_eq!(
         rewrite_aggregate_filters("SELECT COUNT(x WHERE c) FROM t").unwrap(),
-        "SELECT COUNT(x) FILTER (WHERE __KUMO_AGG_FILTER__ c) FROM t"
+        "SELECT COUNT(x) FILTER (WHERE __KUMO_AGG_FILTER__(c)) FROM t"
     );
 }
 
@@ -83,7 +82,6 @@ fn an_already_standard_filter_is_left_alone() {
     // Rewriting this again would produce `FILTER () FILTER (...)`.
     let sql = "SELECT COUNT(x) FILTER (WHERE c) FROM t";
     assert_eq!(rewrite_aggregate_filters(sql).unwrap(), sql);
-    assert_eq!(resolve_aggregate_filters(sql), sql);
 }
 
 #[test]
@@ -100,26 +98,16 @@ fn a_nested_call_with_a_where_is_left_alone() {
 }
 
 #[test]
-fn the_aggregate_filter_rewrite_round_trips() {
-    let original = "SELECT COUNT(x WHERE c) FROM t";
-    let standard = rewrite_aggregate_filters(original).unwrap();
-    assert_eq!(resolve_aggregate_filters(&standard), original);
-    // And the round trip is stable.
-    assert_eq!(
-        resolve_aggregate_filters(
-            &rewrite_aggregate_filters(&resolve_aggregate_filters(&standard)).unwrap()
-        ),
-        original
-    );
-}
-
-#[test]
-fn resolving_is_idempotent_on_unrewritten_text() {
-    let sql = "SELECT COUNT(x) FILTER (WHERE c) FROM t";
-    assert_eq!(resolve_aggregate_filters(sql), sql);
-    assert_eq!(
-        resolve_aggregate_filters(sql),
-        resolve_aggregate_filters(sql)
+fn the_rewritten_filter_is_readable_by_the_base_parser() {
+    // The rewrite exists only so `sqlparser-rs` can read BigQuery's aggregate
+    // filter. What matters is that the result parses, and that the marker is a
+    // *call*: a bare marker name reads as two adjacent tokens, which the base
+    // parser refuses.
+    let standard = rewrite_aggregate_filters("SELECT COUNT(x WHERE c) FROM t").unwrap();
+    assert!(standard.contains("__KUMO_AGG_FILTER__("));
+    assert!(
+        kumosql_sql::parse::parse_statements("SELECT COUNT(x WHERE c) FROM t", false).is_ok(),
+        "the rewritten form should parse"
     );
 }
 
