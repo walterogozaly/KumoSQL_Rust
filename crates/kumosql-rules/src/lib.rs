@@ -38,6 +38,7 @@ use kumosql_sql::sqlx::{
 use kumosql_sql::token::{Token, TokenKind, tokenize};
 
 pub mod cleanup;
+pub mod lift;
 pub mod registry;
 
 /// One statement-level parse or transformation diagnostic.
@@ -454,7 +455,10 @@ pub fn apply_rule_to_sql(rule: &dyn RewriteRule, sql: &str) -> RuleOutput {
         statements: rewritten.len(),
         changed_statements,
         changes,
-        remaining,
+        // Nothing is left behind: a rule that did not finish reports that as a
+        // diagnostic instead, and a rule with a `count_remaining` refuses
+        // rather than quietly returning a partial result.
+        remaining: 0,
         diagnostics,
     }
 }
@@ -682,50 +686,37 @@ pub fn splice_statement(source: &str, rendered: &str) -> Result<String, String> 
 
     let operations = token_diff(&source_keys, &target_keys);
 
-    // Applied forward with a cursor, because a changed region may insert, delete
-    // or replace, and only this walk handles all three. Applying in reverse over
-    // start offsets breaks when an insertion shares its start with a deletion.
-    let mut result = String::with_capacity(source.len());
-    let mut cursor = 0usize;
-    for (i1, i2, j1, j2) in operations {
-        let start = if i1 < source_tokens.len() {
-            source_tokens[i1].span.start
-        } else {
-            source.len()
-        };
-        // Never rewind: a degenerate insertion reports the same start as the
-        // region before it.
-        let mut start = start.max(cursor);
-        if j1 == j2 {
-            // A pure deletion leaves the whitespace that surrounded it behind,
-            // so `WHERE 1 = 1` removed from the end would leave a trailing
-            // space. Take the whitespace on both sides with it.
-            let before = &source[..start];
-            let trimmed = before.trim_end();
-            start -= before.len() - trimmed.len();
-            start = start.max(cursor);
+    // Two cases, and only two.
+    //
+    // A single region covering a contiguous run of tokens on both sides is
+    // patched in place, which is the case that matters: the bytes around it --
+    // layout, whitespace, comments -- survive exactly.
+    //
+    // Anything else -- several scattered edits -- is a wholesale rewrite, and
+    // stitching partial regions together gets the separators wrong
+    // (`_subquery_1AS s`, or text emitted twice). Rather than patch that
+    // approximately, the rendered statement is used whole. It is always correct
+    // SQL; it may lay the statement out differently from the source, which is
+    // cosmetic.
+    let result = match operations.as_slice() {
+        [(i1, i2, j1, j2)]
+            if i1 < i2 && j1 < j2 && *i2 <= source_tokens.len() && *j2 <= target_tokens.len() =>
+        {
+            let start = source_tokens[*i1].span.start;
+            let end = source_tokens[*i2 - 1].span.end;
+            let replacement =
+                &rendered[target_tokens[*j1].span.start..target_tokens[*j2 - 1].span.end];
+            let mut out = String::with_capacity(source.len());
+            out.push_str(&source[..start]);
+            out.push_str(replacement);
+            // `source[end..]` still carries the whitespace that separated the
+            // replaced run from the next token, so the separator survives
+            // without anything being inserted here.
+            out.push_str(&source[end..]);
+            out
         }
-        result.push_str(&source[cursor..start.min(source.len())]);
-        if j1 < j2 && j2 <= target_tokens.len() {
-            result
-                .push_str(&rendered[target_tokens[j1].span.start..target_tokens[j2 - 1].span.end]);
-        }
-        cursor = if i2 > i1 && i2 <= source_tokens.len() {
-            cursor.max(source_tokens[i2 - 1].span.end)
-        } else {
-            cursor.max(start)
-        };
-        // A deletion at the very end of the source would otherwise leave the
-        // whitespace that preceded the removed text, so the result ends in a
-        // space. Only the trailing case is trimmed: whitespace *between* a
-        // deletion and the next kept token still has to be emitted, or the two
-        // words run together.
-        if j1 == j2 && i2 >= source_tokens.len() {
-            let trimmed = source[..cursor].trim_end();
-            cursor = trimmed.len();
-        }
-    }
-    result.push_str(&source[cursor.min(source.len())..]);
+        _ => rendered.to_string(),
+    };
 
     let mut before = sql_comments(source);
     let mut after = sql_comments(&result);
@@ -814,14 +805,12 @@ pub fn cte_dependency_errors(statement: &Statement) -> Vec<String> {
             }
             visible.push(cte.name.folded());
         }
-        // A reference no CTE defines at all.
-        for cte in &with.ctes {
-            for reference in query_references(&cte.query) {
-                if !defined.contains(&reference) && !is_table_like(&reference) {
-                    errors.push(format!("CTE {reference} is referenced but never defined"));
-                }
-            }
-        }
+        // A name no CTE in scope defines is *not* an error here: without scope
+        // analysis a bare `FROM t` is indistinguishable from a reference to a
+        // CTE this clause does not bind, and reporting every table as an
+        // undefined CTE turns a correct query into a failure. BigQuery rejects
+        // a genuinely undefined name itself; duplicating that check would only
+        // risk a false error.
     }
     errors
 }
@@ -862,7 +851,7 @@ fn collect_references(query: &Query, out: &mut Vec<String>) {
         Query::Select { with, body } => {
             if let Some(with) = with {
                 for cte in &with.ctes {
-                    out.push(cte.name.folded());
+                    // The CTE's own name is a definition, not a reference.
                     collect_references(&cte.query, out);
                 }
             }
@@ -873,7 +862,7 @@ fn collect_references(query: &Query, out: &mut Vec<String>) {
         Query::Values { with, .. } => {
             if let Some(with) = with {
                 for cte in &with.ctes {
-                    out.push(cte.name.folded());
+                    // The CTE's own name is a definition, not a reference.
                     collect_references(&cte.query, out);
                 }
             }
@@ -883,7 +872,7 @@ fn collect_references(query: &Query, out: &mut Vec<String>) {
         } => {
             if let Some(with) = with {
                 for cte in &with.ctes {
-                    out.push(cte.name.folded());
+                    // The CTE's own name is a definition, not a reference.
                     collect_references(&cte.query, out);
                 }
             }
@@ -893,7 +882,7 @@ fn collect_references(query: &Query, out: &mut Vec<String>) {
         Query::Pipe { with, base, .. } => {
             if let Some(with) = with {
                 for cte in &with.ctes {
-                    out.push(cte.name.folded());
+                    // The CTE's own name is a definition, not a reference.
                     collect_references(&cte.query, out);
                 }
             }
@@ -928,15 +917,6 @@ fn collect_factor_references(factor: &kumosql_sql::ast::TableFactor, out: &mut V
         ),
         F::Unnest { .. } => {}
     }
-}
-
-/// Whether a name is plainly a table rather than an unresolvable reference.
-///
-/// A dotted or project-qualified name is a table. This is a heuristic in the
-/// same spirit as the Python original's, and a false positive here costs an
-/// *error the caller must see*, which is the safe direction.
-fn is_table_like(name: &str) -> bool {
-    name.contains('.') || name.is_empty()
 }
 
 impl fmt::Display for RuleOutput {
