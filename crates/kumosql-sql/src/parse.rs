@@ -37,6 +37,7 @@ use crate::ast::*;
 use crate::error::{Error, ErrorKind, Result};
 use crate::literals::canonical_literals;
 use crate::rewrite::{FILTER_MARKER, rewrite_all};
+use crate::rewrites::{LIKE_ALL_MARKER, TABLE_ARGUMENT_MARKER};
 
 /// The dialect used for the base parse.
 ///
@@ -77,13 +78,89 @@ pub fn parse_statements(sql: &str, recover: bool) -> Result<Vec<Statement>> {
     };
 
     let mut out = Vec::with_capacity(statements.len());
+    let mut saw_table_argument = false;
     for (index, statement) in statements.iter().enumerate() {
         let span = offset_of_statement(&rewritten, index, statements.len());
         let converted =
             convert_statement(statement).map_err(|e| Error::at(e.kind, span, e.detail))?;
+        // A statement with no query (a bare DDL command) has nothing to check.
+        saw_table_argument |= converted
+            .top_level_query()
+            .is_some_and(query_mentions_table_argument);
         out.push(converted);
     }
+
+    // `sqlparser` reads `FROM ds.fn(arg, ...)` as a bare table and drops the
+    // arguments without reporting anything. Returning that would be silent data
+    // loss, so the query is declined instead. Recorded as a known gap in
+    // `docs/roadmap.md`.
+    if rewritten.contains(TABLE_ARGUMENT_MARKER) && !saw_table_argument {
+        return Err(Error::new(
+            ErrorKind::Unmodeled,
+            "a table function in FROM loses its arguments when read by the base parser; \\
+             this query is declined rather than read without them",
+        ));
+    }
+
     Ok(out)
+}
+
+/// Whether a query still holds a `TABLE` argument.
+///
+/// Used to confirm the marker survived conversion rather than being dropped.
+fn query_mentions_table_argument(query: &Query) -> bool {
+    match query {
+        Query::Select { with, body } => {
+            body.projections.iter().any(is_table_arg)
+                || factor_mentions_table_argument(&body.from)
+                || with.as_ref().is_some_and(|w| {
+                    w.ctes
+                        .iter()
+                        .any(|c| query_mentions_table_argument(&c.query))
+                })
+        }
+        Query::Values { with, rows } => {
+            rows.iter().flatten().any(is_table_arg)
+                || with.as_ref().is_some_and(|w| {
+                    w.ctes
+                        .iter()
+                        .any(|c| query_mentions_table_argument(&c.query))
+                })
+        }
+        Query::SetOperation {
+            with, left, right, ..
+        } => {
+            query_mentions_table_argument(left)
+                || query_mentions_table_argument(right)
+                || with.as_ref().is_some_and(|w| {
+                    w.ctes
+                        .iter()
+                        .any(|c| query_mentions_table_argument(&c.query))
+                })
+        }
+    }
+}
+
+/// Whether `expr` holds a `TABLE` argument anywhere inside it.
+fn is_table_arg(expr: &Expr) -> bool {
+    match expr {
+        Expr::TableArg(_) => true,
+        Expr::Function { args, .. } => args.iter().any(is_table_arg),
+        Expr::Alias { expr, .. } => is_table_arg(expr),
+        _ => false,
+    }
+}
+
+fn factor_mentions_table_argument(factor: &Option<TableFactor>) -> bool {
+    match factor {
+        Some(TableFactor::TableFunction { args, .. }) => args.iter().any(is_table_arg),
+        Some(TableFactor::Subquery { query, .. }) => query_mentions_table_argument(query),
+        Some(TableFactor::Join { left, right, .. }) => {
+            factor_mentions_table_argument(&Some(left.as_ref().clone()))
+                || factor_mentions_table_argument(&Some(right.as_ref().clone()))
+        }
+        _ => false,
+    }
 }
 
 /// A byte offset for the statement at `index`, used only for error reporting.
@@ -636,6 +713,43 @@ fn convert_table_factor(factor: &sp::TableFactor) -> Result<TableFactor> {
                     .map(|a| a.columns.iter().map(|c| convert_ident(&c.name)).collect()),
             })
         }
+        sp::TableFactor::TableFunction { expr, alias } => {
+            // `dataset.fn(arg, ...)` reaches here as a call expression whose
+            // name is dotted. The `TABLE` argument inside it was marked in the
+            // source; the marker is unwrapped below.
+            match expr {
+                sp::Expr::Function(function) => {
+                    let call = convert_function(function)?;
+                    match call {
+                        // A marker call becomes the table it stood for.
+                        Expr::TableArg(name) => Ok(TableFactor::Table {
+                            name,
+                            alias: alias.as_ref().map(convert_table_alias),
+                            options: None,
+                        }),
+                        Expr::Function { name, args, .. } => Ok(TableFactor::TableFunction {
+                            name,
+                            args: args
+                                .into_iter()
+                                .map(|arg| match arg {
+                                    Expr::TableArg(name) => Expr::TableArg(name),
+                                    other => other,
+                                })
+                                .collect(),
+                            alias: alias.as_ref().map(convert_table_alias),
+                        }),
+                        other => Err(Error::new(
+                            ErrorKind::Unmodeled,
+                            format!("table function {other:?} is outside the modelled subset"),
+                        )),
+                    }
+                }
+                other => Err(Error::new(
+                    ErrorKind::Unmodeled,
+                    format!("table function {other:?} is outside the modelled subset"),
+                )),
+            }
+        }
         sp::TableFactor::UNNEST {
             array_exprs,
             alias,
@@ -892,24 +1006,18 @@ fn convert_expr(expr: &sp::Expr) -> Result<Expr> {
         },
         E::Like {
             negated,
+            any,
             expr,
             pattern,
             ..
-        } => Expr::Like {
-            expr: Box::new(convert_expr(expr)?),
-            pattern: Box::new(convert_expr(pattern)?),
-            negated: *negated,
-        },
+        } => convert_like(*negated, *any, expr, pattern)?,
         E::ILike {
             negated,
+            any,
             expr,
             pattern,
             ..
-        } => Expr::Like {
-            expr: Box::new(convert_expr(expr)?),
-            pattern: Box::new(convert_expr(pattern)?),
-            negated: *negated,
-        },
+        } => convert_like(*negated, *any, expr, pattern)?,
 
         E::IsDistinctFrom(left, right) => Expr::Binary {
             op: BinaryOp::IsDistinctFrom,
@@ -1077,6 +1185,25 @@ fn convert_function(function: &sp::Function) -> Result<Expr> {
         return Ok(inner);
     }
 
+    // A `TABLE name` argument is a node of its own, not a call.
+    if name.parts.len() == 1
+        && name.parts[0]
+            .name
+            .eq_ignore_ascii_case(TABLE_ARGUMENT_MARKER)
+    {
+        let inner = args
+            .into_iter()
+            .next()
+            .unwrap_or(Expr::Literal(Literal::Null));
+        return match inner {
+            Expr::Column(table) => Ok(Expr::TableArg(table)),
+            other => Err(Error::new(
+                ErrorKind::Unmodeled,
+                format!("a TABLE argument must name a table, got {other:?}"),
+            )),
+        };
+    }
+
     let call = match window_spec {
         Some(spec) => Expr::Window {
             function: Box::new(Expr::Function {
@@ -1129,6 +1256,63 @@ fn render_window_frame(frame: &sp::WindowFrame) -> String {
             .map(|b| b.to_string())
             .unwrap_or_else(|| "CURRENT ROW".to_string())
     )
+}
+
+/// Convert a `LIKE`, recovering the quantifier the source rewrite parked.
+///
+/// `sqlparser` 0.59 records only `any: bool`, so it cannot tell `ANY` from
+/// `ALL`. `rewrite_like_quantifiers` therefore rewrites
+/// `x LIKE ALL UNNEST(arr)` as `x LIKE ANY UNNEST(__KUMO_LIKE_ALL__(arr))`:
+/// the parser sees an ordinary `ANY` and reads `UNNEST(...)` as a plain call,
+/// and the marker call inside it is what says the quantifier was really `ALL`.
+fn convert_like(negated: bool, any: bool, expr: &sp::Expr, pattern: &sp::Expr) -> Result<Expr> {
+    // `UNNEST(__KUMO_LIKE_ALL__(arr))` means `ALL UNNEST(arr)`.
+    if let Some(inner) = unnest_marker_argument(pattern) {
+        return Ok(Expr::Like {
+            expr: Box::new(convert_expr(expr)?),
+            pattern: Box::new(convert_expr(inner)?),
+            negated,
+            quantifier: Some(LikeQuantifier::All),
+        });
+    }
+
+    Ok(Expr::Like {
+        expr: Box::new(convert_expr(expr)?),
+        pattern: Box::new(convert_expr(pattern)?),
+        negated,
+        // `LIKE SOME` was read as `ANY` by the rewrite, and `SOME` is BigQuery's
+        // older spelling of `ANY`.
+        quantifier: any.then_some(LikeQuantifier::Any),
+    })
+}
+
+/// The array of `UNNEST(__KUMO_LIKE_ALL__(x))`, if that is what `expr` is.
+fn unnest_marker_argument(expr: &sp::Expr) -> Option<&sp::Expr> {
+    // `UNNEST(...)` reaches here as an ordinary function call.
+    let sp::Expr::Function(unnest) = expr else {
+        return None;
+    };
+    if unnest.name.to_string().to_uppercase() != "UNNEST" {
+        return None;
+    }
+    let sp::FunctionArguments::List(list) = &unnest.args else {
+        return None;
+    };
+    let sp::FunctionArg::Unnamed(sp::FunctionArgExpr::Expr(sp::Expr::Function(marker))) =
+        list.args.first()?
+    else {
+        return None;
+    };
+    if marker.name.to_string().to_uppercase() != LIKE_ALL_MARKER {
+        return None;
+    }
+    let sp::FunctionArguments::List(inner) = &marker.args else {
+        return None;
+    };
+    match inner.args.first()? {
+        sp::FunctionArg::Unnamed(sp::FunctionArgExpr::Expr(expr)) => Some(expr),
+        _ => None,
+    }
 }
 
 fn convert_value(value: &sp::Value) -> Result<Expr> {

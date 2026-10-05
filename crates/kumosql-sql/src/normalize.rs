@@ -263,7 +263,12 @@ pub fn contains_window(expr: &Expr) -> bool {
                 || otherwise.as_deref().is_some_and(contains_window)
         }
         Expr::Cast { expr, .. } => contains_window(expr),
-        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) | Expr::Column(_) => false,
+        Expr::Star
+        | Expr::ModifiedStar(_)
+        | Expr::Literal(_)
+        | Expr::Column(_)
+        | Expr::TableArg(_) => false,
+        Expr::WithExpr { body, .. } => contains_window(body),
         // A subquery is refused separately; do not also treat it as a window.
         Expr::Subquery(_) | Expr::Exists { .. } | Expr::Verbatim { .. } => false,
     }
@@ -290,6 +295,9 @@ pub fn contains_subquery(expr: &Expr) -> bool {
         Expr::IsNull { expr, .. } | Expr::IsBool { expr, .. } => contains_subquery(expr),
         Expr::Like { expr, pattern, .. } => contains_subquery(expr) || contains_subquery(pattern),
         Expr::Collate { expr, .. } => contains_subquery(expr),
+        Expr::WithExpr { variables, body } => {
+            variables.iter().any(|(_, value)| contains_subquery(value)) || contains_subquery(body)
+        }
         Expr::Interval { value, .. } => contains_subquery(value),
         Expr::Array(items) => items.iter().any(contains_subquery),
         Expr::Struct { fields } => fields.iter().any(contains_subquery),
@@ -310,7 +318,11 @@ pub fn contains_subquery(expr: &Expr) -> bool {
         }
         Expr::Cast { expr, .. } => contains_subquery(expr),
         Expr::Window { function, .. } => contains_subquery(function),
-        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) | Expr::Column(_) => false,
+        Expr::Star
+        | Expr::ModifiedStar(_)
+        | Expr::Literal(_)
+        | Expr::Column(_)
+        | Expr::TableArg(_) => false,
         Expr::Verbatim { .. } => false,
     }
 }
@@ -339,6 +351,9 @@ pub fn contains_aggregate(expr: &Expr) -> bool {
         Expr::IsNull { expr, .. } | Expr::IsBool { expr, .. } => contains_aggregate(expr),
         Expr::Like { expr, pattern, .. } => contains_aggregate(expr) || contains_aggregate(pattern),
         Expr::Collate { expr, .. } => contains_aggregate(expr),
+        Expr::WithExpr { variables, body } => {
+            variables.iter().any(|(_, value)| contains_aggregate(value)) || contains_aggregate(body)
+        }
         Expr::Interval { value, .. } => contains_aggregate(value),
         Expr::Array(items) => items.iter().any(contains_aggregate),
         Expr::Struct { fields } => fields.iter().any(contains_aggregate),
@@ -354,7 +369,11 @@ pub fn contains_aggregate(expr: &Expr) -> bool {
                 || otherwise.as_deref().is_some_and(contains_aggregate)
         }
         Expr::Cast { expr, .. } => contains_aggregate(expr),
-        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) | Expr::Column(_) => false,
+        Expr::Star
+        | Expr::ModifiedStar(_)
+        | Expr::Literal(_)
+        | Expr::Column(_)
+        | Expr::TableArg(_) => false,
         Expr::Subquery(_) | Expr::Exists { .. } | Expr::Verbatim { .. } => false,
     }
 }
@@ -377,6 +396,9 @@ pub fn contains_column(expr: &Expr) -> bool {
         Expr::IsNull { expr, .. } | Expr::IsBool { expr, .. } => contains_column(expr),
         Expr::Like { expr, pattern, .. } => contains_column(expr) || contains_column(pattern),
         Expr::Collate { expr, .. } => contains_column(expr),
+        Expr::WithExpr { variables, body } => {
+            variables.iter().any(|(_, value)| contains_column(value)) || contains_column(body)
+        }
         Expr::Interval { value, .. } => contains_column(value),
         Expr::Array(items) => items.iter().any(contains_column),
         Expr::Struct { fields } => fields.iter().any(contains_column),
@@ -397,7 +419,7 @@ pub fn contains_column(expr: &Expr) -> bool {
         }
         Expr::Cast { expr, .. } => contains_column(expr),
         Expr::Window { function, .. } => contains_column(function),
-        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) => false,
+        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) | Expr::TableArg(_) => false,
         Expr::Subquery(_) | Expr::Exists { .. } | Expr::Verbatim { .. } => false,
     }
 }
@@ -447,6 +469,12 @@ pub fn contains_unknown_function(expr: &Expr) -> bool {
             contains_unknown_function(expr) || contains_unknown_function(pattern)
         }
         Expr::Collate { expr, .. } => contains_unknown_function(expr),
+        Expr::WithExpr { variables, body } => {
+            variables
+                .iter()
+                .any(|(_, value)| contains_unknown_function(value))
+                || contains_unknown_function(body)
+        }
         Expr::Interval { value, .. } => contains_unknown_function(value),
         Expr::Array(items) => items.iter().any(contains_unknown_function),
         Expr::Struct { fields } => fields.iter().any(contains_unknown_function),
@@ -462,7 +490,11 @@ pub fn contains_unknown_function(expr: &Expr) -> bool {
                 || otherwise.as_deref().is_some_and(contains_unknown_function)
         }
         Expr::Cast { expr, .. } => contains_unknown_function(expr),
-        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) | Expr::Column(_) => false,
+        Expr::Star
+        | Expr::ModifiedStar(_)
+        | Expr::Literal(_)
+        | Expr::Column(_)
+        | Expr::TableArg(_) => false,
         Expr::Subquery(_) | Expr::Exists { .. } => false,
         Expr::Verbatim { .. } => true,
     }
@@ -622,6 +654,12 @@ fn collect_top_level_columns(expr: &Expr, out: &mut Vec<String>) {
             collect_top_level_columns(pattern, out);
         }
         Expr::Collate { expr, .. } => collect_top_level_columns(expr, out),
+        Expr::WithExpr { variables, body } => {
+            for (_, value) in variables {
+                collect_top_level_columns(value, out);
+            }
+            collect_top_level_columns(body, out);
+        }
         Expr::Interval { value, .. } => collect_top_level_columns(value, out),
         Expr::Array(items) => {
             for item in items {
@@ -650,7 +688,7 @@ fn collect_top_level_columns(expr: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::Cast { expr, .. } => collect_top_level_columns(expr, out),
-        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) => {}
+        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) | Expr::TableArg(_) => {}
         Expr::Subquery(_) | Expr::Exists { .. } | Expr::Verbatim { .. } => {}
     }
 }
@@ -729,6 +767,11 @@ fn expand_group_by_all_in_factor(factor: &mut TableFactor) {
             expand_group_by_all_in_factor(left);
             expand_group_by_all_in_factor(right);
             expand_group_by_all_in_maybe(on);
+        }
+        TableFactor::TableFunction { args, .. } => {
+            for arg in args {
+                expand_group_by_all_in_expr(arg);
+            }
         }
         TableFactor::Unnest { array, .. } => expand_group_by_all_in_expr(array),
         TableFactor::Table { .. } => {}
@@ -809,13 +852,23 @@ fn expand_group_by_all_in_expr(expr: &mut Expr) {
             }
         }
         Expr::Collate { expr, .. } => expand_group_by_all_in_expr(expr),
+        Expr::WithExpr { variables, body } => {
+            for (_, value) in variables {
+                expand_group_by_all_in_expr(value);
+            }
+            expand_group_by_all_in_expr(body);
+        }
         Expr::Interval { value, .. } => expand_group_by_all_in_expr(value),
         Expr::Array(items) | Expr::Struct { fields: items } => {
             for item in items {
                 expand_group_by_all_in_expr(item);
             }
         }
-        Expr::Star | Expr::ModifiedStar(_) | Expr::Literal(_) | Expr::Column(_) => {}
+        Expr::Star
+        | Expr::ModifiedStar(_)
+        | Expr::Literal(_)
+        | Expr::Column(_)
+        | Expr::TableArg(_) => {}
         Expr::Verbatim { .. } => {}
     }
 }

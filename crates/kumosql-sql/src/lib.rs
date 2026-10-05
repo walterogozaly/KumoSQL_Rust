@@ -25,6 +25,7 @@ pub mod literals;
 pub mod normalize;
 pub mod parse;
 pub mod rewrite;
+pub mod rewrites;
 pub mod scripts;
 pub mod token;
 

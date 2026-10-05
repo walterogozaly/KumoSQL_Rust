@@ -120,7 +120,21 @@ parts are an enum, and `Query` is a struct not an enum.
   each statement parsed on its own. Splitting is not flattening: a statement
   inside `IF` or a procedure carries that on its `ScriptPart`.
 
-95 tests pass across the workspace.
+* **`rewrites`** (`kumosql-sql/src/rewrites.rs`) -- the remaining
+  `bigquery_syntax.py` rewrites: `LIKE ALL/SOME UNNEST`, the `WITH(a AS 1, ...)`
+  named-expression form, a `TABLE name` argument to a table-valued function, and
+  `DROP TABLE FUNCTION`. New AST nodes came with them: `LikeQuantifier`,
+  `Expr::WithExpr`, `Expr::TableArg`, `TableFactor::TableFunction`.
+
+117 tests pass across the workspace.
+
+**`sqlparser` silently drops the arguments of a table function in FROM.**
+`FROM ds.fn(arg, ...)` parses as a bare table named `ds.fn` with the call's
+arguments discarded and *no error reported*. That is the worst failure mode
+available to this project: a truncated query that looks fine. The parser
+therefore compares whether the `TABLE` marker survived conversion and refuses
+the query when it did not, rather than returning a table it silently trimmed.
+Recorded as a known gap below.
 
 The script tests are ported from `tests/test_scripts.py` **with its exact
 expected statement texts and conditional flags**, because a splitter one
@@ -137,10 +151,8 @@ bugs were caught that way, none of which my own reading had predicted:
    left the splitter inside the procedure forever
 5. labels, a missing final semicolon, and stray keywords at top level
 
-Still to do for task 2: `parse_check` (`check_query` / `reading`) and the
-remaining BigQuery rewrites the Python original does in `bigquery_syntax.py`
-(pipe operators, `LIKE ALL UNNEST`, the `WITH(a AS 1)` expression,
-`DROP TABLE FUNCTION`, `GRAPH_TABLE`).
+Still to do for task 2: `parse_check` (`check_query` / `reading`) and the pipe
+operator rewrites.
 
 ## Sequencing notes
 
@@ -168,3 +180,10 @@ tightens it rather than writing it once at the end.
 - **Benchmark corpora are not vendored.** Several evals need external checkouts
   downloaded at pinned commits. If those are unavailable, those evals report as
   not-run rather than as passing.
+- **`sqlparser` cannot represent `DROP TABLE FUNCTION`.** It reads the shape as a
+  drop of the table named `FUNCTION` and then refuses the real name, so the
+  rewrite that works for `sqlglot` is a no-op here. The statement has to come
+  through the command/splitter path instead of the parse. Declined for now.
+- **`sqlparser` drops a table function's arguments in FROM.** See above. The
+  parser refuses rather than returning the truncated query; the proper fix is a
+  different strategy for that shape, not a looser check.

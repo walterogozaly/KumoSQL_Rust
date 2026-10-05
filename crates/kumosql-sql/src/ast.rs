@@ -467,7 +467,29 @@ pub enum Expr {
         pattern: Box<Expr>,
         /// `NOT LIKE`.
         negated: bool,
+        /// `ANY` or `ALL`, for the quantifier over an array: `x LIKE ANY y`.
+        ///
+        /// `None` means the bare `LIKE`. `SOME` is BigQuery's older spelling
+        /// of `ANY` and is read as `ANY`.
+        quantifier: Option<LikeQuantifier>,
     },
+    /// A `WITH(expr AS name, ...)` expression, BigQuery's named-expression
+    /// form.
+    ///
+    /// Distinct from a `WITH` *clause*: this binds a name to a value inside one
+    /// expression. `WITH(a AS 1, a + 1)` is the whole expression.
+    WithExpr {
+        /// The `(name AS value)` bindings, in order.
+        variables: Vec<(Ident, Expr)>,
+        /// The expression that uses them.
+        body: Box<Expr>,
+    },
+    /// A `TABLE name` argument to a table-valued function.
+    ///
+    /// `FROM dataset.fn(TABLE dataset.input, option => value)` passes a whole
+    /// table to the function. A generic parser stops at `TABLE`, so this is
+    /// marked in the source and resolved here.
+    TableArg(ObjectName),
     /// `x IS [NOT] TRUE|FALSE|UNKNOWN` is separate from `IsNull` because BigQuery
     /// reads them differently and the provers must not conflate them.
     Collate {
@@ -508,6 +530,27 @@ pub enum Expr {
         /// The argument text, kept verbatim.
         text: String,
     },
+}
+
+/// The quantifier on a quantified `LIKE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LikeQuantifier {
+    /// `x LIKE ANY y` -- true when the pattern matches at least one element.
+    Any,
+    /// `x LIKE ALL y` -- true when the pattern matches every element.
+    ///
+    /// On empty input this is true and `ANY` is false, which is exactly the
+    /// difference the provers must not blur.
+    All,
+}
+
+impl fmt::Display for LikeQuantifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            LikeQuantifier::Any => "ANY",
+            LikeQuantifier::All => "ALL",
+        })
+    }
 }
 
 /// The value an `IS` test looks for.
@@ -672,11 +715,22 @@ impl fmt::Display for Expr {
                 expr,
                 pattern,
                 negated,
-            } => write!(
-                f,
-                "{expr} {}LIKE {pattern}",
-                if *negated { "NOT " } else { "" }
-            ),
+                quantifier,
+            } => {
+                write!(f, "{expr} {}LIKE ", if *negated { "NOT " } else { "" })?;
+                if let Some(quantifier) = quantifier {
+                    write!(f, "{quantifier} ")?;
+                }
+                write!(f, "{pattern}")
+            }
+            Expr::WithExpr { variables, body } => {
+                let bindings: Vec<String> = variables
+                    .iter()
+                    .map(|(name, value)| format!("{name} AS {value}"))
+                    .collect();
+                write!(f, "WITH({})", bindings.join(", ")).and_then(|_| write!(f, ", {body}"))
+            }
+            Expr::TableArg(name) => write!(f, "TABLE {name}"),
             Expr::Collate { expr, collation } => write!(f, "{expr} COLLATE {collation}"),
             Expr::Interval { value, unit } => match unit {
                 Some(unit) => write!(f, "INTERVAL {value} {unit}"),
@@ -827,6 +881,19 @@ pub enum TableFactor {
         /// The column alias list, when written.
         columns: Option<Vec<Ident>>,
     },
+    /// A table-valued function: `dataset.fn(arg, ...)`.
+    ///
+    /// Needed because `dataset.fn(TABLE dataset.input, option => value)` passes
+    /// a whole table to the function, which is the shape the `TABLE` marker in
+    /// [`crate::rewrites`] exists for.
+    TableFunction {
+        /// The function name, usually dotted.
+        name: ObjectName,
+        /// Its arguments, in order.
+        args: Vec<Expr>,
+        /// Its alias.
+        alias: Option<Ident>,
+    },
     /// `UNNEST(expr)`, with or without `WITH OFFSET`.
     Unnest {
         /// The array expression.
@@ -877,6 +944,13 @@ impl fmt::Display for TableFactor {
                 if let Some(columns) = columns {
                     write!(f, " ({})", join_idents(columns))?;
                 }
+                if let Some(alias) = alias {
+                    write!(f, " AS {alias}")?;
+                }
+                Ok(())
+            }
+            TableFactor::TableFunction { name, args, alias } => {
+                write!(f, "{name}({})", join_commas(args))?;
                 if let Some(alias) = alias {
                     write!(f, " AS {alias}")?;
                 }

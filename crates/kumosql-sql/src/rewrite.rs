@@ -159,7 +159,7 @@ pub fn rewrite_aggregate_filters(sql: &str) -> Result<String> {
 }
 
 /// The position of a `)` closing the `(` at `open`.
-fn matching_paren(tokens: &[crate::token::Token], open: usize) -> Option<usize> {
+pub(crate) fn matching_paren(tokens: &[crate::token::Token], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (i, token) in tokens.iter().enumerate().skip(open) {
         match token.kind {
@@ -281,7 +281,32 @@ pub fn rewrite_double_quoted_strings(sql: &str) -> String {
 /// resolving first would undo the rewrite before it was ever needed.
 pub fn rewrite_all(sql: &str) -> Result<String> {
     reject_struct_comparison(sql)?;
+    let rewritten = crate::rewrites::rewrite_all(sql)?;
     Ok(rewrite_double_quoted_strings(&rewrite_aggregate_filters(
-        sql,
+        &rewritten,
     )?))
+}
+
+/// Apply `(start, end, replacement)` edits over `sql`.
+///
+/// Edits are applied left to right and an edit starting inside an already
+/// applied span is skipped, so overlapping edits cannot corrupt the text.
+pub(crate) fn apply_edits(sql: &str, mut edits: Vec<(usize, usize, String)>) -> String {
+    if edits.is_empty() {
+        return sql.to_string();
+    }
+    edits.sort_by_key(|(start, _, _)| *start);
+
+    let mut out = String::with_capacity(sql.len());
+    let mut cursor = 0usize;
+    for (start, end, replacement) in edits {
+        if start < cursor {
+            continue;
+        }
+        out.push_str(&sql[cursor..start]);
+        out.push_str(&replacement);
+        cursor = end;
+    }
+    out.push_str(&sql[cursor..]);
+    out
 }
