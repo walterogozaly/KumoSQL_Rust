@@ -13,7 +13,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`, `partial`.
 | 1 | `toolchain-workspace` | done | Rust 1.99.0 + VS Build Tools 2022 installed; 12 crates scaffolded; see [toolchain.md](toolchain.md) for the Application Control workaround |
 | 2 | `sql-ast-parser` | done | 144 tests. Literals, errors, AST + renderer, tokenizer, rewrites, parse pipeline, `GROUP BY ALL`, script splitting, `parse_check`, pipe operators |
 | 3 | `sqlx-and-scripts` | done | `sqlx` module ported: sections, comment spans, masking, opaque tokens, verifying restore (26 tests) |
-| 4 | `rule-framework` | todo | |
+| 4 | `rule-framework` | done | Trait, diagnostics, `RuleOutput`, registry, splicing driver, CTE dependency checks (23 tests) |
 | 5 | `cleanup-rules` | todo | The nine documented rules |
 | 6 | `formatting-rules` | todo | No sqlfluff peer; Rust formatter + `proof_format` check |
 | 7 | `structural-prover` | todo | |
@@ -187,7 +187,46 @@ Recorded as a known gap below.
   error, and the connective is removed *together with* the sentinel -- leaving it
   behind would duplicate it. Both of those were caught by the round-trip tests.
 
-170 tests pass in `kumosql-sql`.
+* **`kumosql-rules`** -- the rule framework: the [`RewriteRule`] trait, the
+  registry, and the driver that applies a rule to SQL, SQLX or a script.
+
+  A rule knows how to rewrite one statement. Everything around it is in the
+  driver, and it is deliberately paranoid, because the failure this project
+  exists to prevent is a rewrite that silently changes what a query means:
+
+  - statements map back to their **source spans**, and only the spans a rule
+    actually changed are edited, so every other byte -- layout, whitespace,
+    comments -- survives;
+  - a splice that cannot retain every source comment is an **error**, not a
+    best-effort edit;
+  - a rule that reports a change whose rendered statement is **identical** is an
+    error, so a rule cannot claim work it did not do;
+  - Jinja templates, pipe syntax and opaque `${...}` expressions are each left
+    as written with a diagnostic, because the rule would otherwise be rewriting
+    something other than what the user wrote;
+  - a failed step restores the statement it was working on rather than keeping a
+    half-mutated tree;
+  - a CTE referenced before it is defined, or never defined, is an error.
+
+  `RuleOutput::success()` is false on any fatal diagnostic code or a non-zero
+  `remaining` count, which is where the CLI's exit code 2 comes from. The
+  verifier statuses (`proven` / `unproven` / ...) layer on top of this and are
+  task 7.
+
+170 tests pass in `kumosql-sql`, 23 in `kumosql-rules`.
+
+### What task 4 deliberately does not do
+
+- **No recovery fallback.** A parse failure is reported; the Python original
+  retries with `sqlglot`'s recovery mode.
+- **The script path rebuilds each statement** and rejoins with `;
+` rather
+  than splicing spans, because a script's statements are not at known offsets.
+  A statement that loses its trailing `;` is therefore rewritten in place.
+- **The splice aligns tokens with a longest-common-subsequence diff** rather
+  than `difflib`'s `SequenceMatcher`. Statement token runs are short; the
+  quadratic cost is not worth avoiding, and what matters is that equal tokens
+  match so the edit stays local.
 
 ### What task 2 deliberately does not do
 
