@@ -136,6 +136,31 @@ therefore compares whether the `TABLE` marker survived conversion and refuses
 the query when it did not, rather than returning a table it silently trimmed.
 Recorded as a known gap below.
 
+* **`parse_check`** (`kumosql-sql/src/parse_check.rs`) -- checks that the parse
+  accounts for the whole query, in the spirit of `parse_check.py`.
+
+  The Python module is ~2,000 lines because it compares `sqlglot`'s reading with
+  a hand-written precedence parser for three dialects. This port keeps the
+  property that module exists to protect and checks it against our own tree: the
+  **atoms** of the query (identifiers, numbers, strings) are collected from the
+  source tokens and from the parsed tree, and the two multisets must be equal.
+
+  That catches the two failures that produce a query which *looks* fine:
+
+  1. a **dropped token** -- the parser read part of the query and discarded the
+     rest without complaining, which is exactly the table-function bug above;
+  2. an **invented name** -- the tree holds a name the source never spells.
+
+  The comparison runs on the *rewritten* text, so a marker or a canonicalised
+  literal on one side only would not read as a disagreement; `ParseCheck::note`
+  says which text was compared. `Unchecked` is kept distinct from `Disagree`,
+  because "we could not look at this" is a different claim from "these differ",
+  and `disagrees()` never reports the first as the second.
+
+132 tests pass in `kumosql-sql`.
+
+Still to do for task 2: the pipe operator rewrites.
+
 The script tests are ported from `tests/test_scripts.py` **with its exact
 expected statement texts and conditional flags**, because a splitter one
 statement off hands a caller a different set of queries to verify. Five real

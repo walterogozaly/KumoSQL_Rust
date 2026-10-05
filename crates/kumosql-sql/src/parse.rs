@@ -1323,14 +1323,29 @@ fn convert_value(value: &sp::Value) -> Result<Expr> {
         sp::Value::Boolean(b) => Literal::Boolean(*b),
         sp::Value::Null => Literal::Null,
         sp::Value::Placeholder(name) => Literal::Parameter(name.clone()),
+        // A dollar-quoted run is PostgreSQL spelling, not BigQuery's. Kept as
+        // written rather than guessed at.
+        sp::Value::DollarQuotedString(text) => Literal::String(text.value.clone()),
         // The pipeline canonicalises bytes literals to one spelling first, so
         // by the time they reach here the escapes are already decoded.
         sp::Value::SingleQuotedByteStringLiteral(text)
-        | sp::Value::DoubleQuotedByteStringLiteral(text) => {
+        | sp::Value::DoubleQuotedByteStringLiteral(text)
+        | sp::Value::TripleSingleQuotedByteStringLiteral(text)
+        | sp::Value::TripleDoubleQuotedByteStringLiteral(text) => {
             Literal::Bytes(text.clone().into_bytes())
         }
-        sp::Value::EscapedStringLiteral(text) => Literal::String(text.clone()),
-        sp::Value::NationalStringLiteral(text) => Literal::String(text.clone()),
+        // Every string spelling the parser can produce, including raw and
+        // triple-quoted forms. The literals stage canonicalises the escapes
+        // before the parse, so the text here is already one spelling.
+        sp::Value::EscapedStringLiteral(text)
+        | sp::Value::UnicodeStringLiteral(text)
+        | sp::Value::NationalStringLiteral(text)
+        | sp::Value::TripleSingleQuotedString(text)
+        | sp::Value::TripleDoubleQuotedString(text)
+        | sp::Value::SingleQuotedRawStringLiteral(text)
+        | sp::Value::DoubleQuotedRawStringLiteral(text)
+        | sp::Value::TripleSingleQuotedRawStringLiteral(text)
+        | sp::Value::TripleDoubleQuotedRawStringLiteral(text) => Literal::String(text.clone()),
         other => {
             return Err(Error::new(
                 ErrorKind::Unmodeled,
