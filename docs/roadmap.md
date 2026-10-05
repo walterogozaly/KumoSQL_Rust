@@ -81,9 +81,38 @@ reconstruction, and BigQuery's doubled-backtick quoting being misread. The
 original marks its rewrites -- without it, a query that already used the
 standard `FILTER` is indistinguishable from one this module produced.
 
-Still to do for task 2: wiring the pipeline together (`parse_statements`:
-literals -> rewrites -> `sqlparser-rs` -> AST), `GROUP BY ALL`, script
-statements, and `parse_check`.
+* **`parse`** (`kumosql-sql/src/parse.rs`) -- the pipeline end to end:
+  text -> `canonical_literals` -> `rewrite_all` -> `sqlparser-rs` -> the
+  kumosql AST, and back out through `render_statements`. The conversion step is
+  what makes the modelled subset explicit: an expression outside it becomes
+  `Unmodeled` naming the construct, rather than a node that survives into a
+  rewrite and quietly changes what the rule meant.
+
+67 tests pass across the workspace.
+
+Three real bugs the parse tests caught, all now pinned by tests:
+
+1. `rewrite_all` rewrote the aggregate filter and then immediately resolved it,
+   undoing its own work before the parser ran. Rewriting and resolving are now
+   separate functions.
+2. The marker leaked into the AST, so rendering emitted
+   `COUNT(x WHERE c) (WHERE __KUMO_AGG_FILTER__(c))`. Since the AST already
+   models the filter as a node, `Expr::Filter` now renders BigQuery's own
+   spelling and the marker is purely an internal parse trick, unwrapped during
+   conversion.
+3. `"text"` was read as a quoted *identifier*, because `GenericDialect` treats
+   double quotes as identifier quotes. This is the one case where `sqlparser`'s
+   reading is the **opposite** of BigQuery's rather than merely a gap, so the
+   delimiter is rewritten before parsing.
+
+`sqlparser-rs` 0.59 moved several things relative to 0.5x, which cost real time
+to discover: `ORDER BY`/`LIMIT` live on `Query` not `Select`, `FILTER` is a
+field on `Function` not a node, windows live on `Function.over`, `ObjectName`
+parts are an enum, and `Query` is a struct not an enum.
+
+Still to do for task 2: `GROUP BY ALL` expansion (it parses but is not yet
+expanded into its keys, as `expand_group_by_all` does in Python), multi-statement
+script splitting, and `parse_check`.
 
 ## Sequencing notes
 
