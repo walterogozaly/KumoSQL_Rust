@@ -12,7 +12,7 @@ Status values: `todo`, `in progress`, `done`, `blocked`, `partial`.
 | --- | --- | --- | --- |
 | 1 | `toolchain-workspace` | done | Rust 1.99.0 + VS Build Tools 2022 installed; 12 crates scaffolded; see [toolchain.md](toolchain.md) for the Application Control workaround |
 | 2 | `sql-ast-parser` | done | 144 tests. Literals, errors, AST + renderer, tokenizer, rewrites, parse pipeline, `GROUP BY ALL`, script splitting, `parse_check`, pipe operators |
-| 3 | `sqlx-and-scripts` | todo | |
+| 3 | `sqlx-and-scripts` | done | `sqlx` module ported: sections, comment spans, masking, opaque tokens, verifying restore (26 tests) |
 | 4 | `rule-framework` | todo | |
 | 5 | `cleanup-rules` | todo | The nine documented rules |
 | 6 | `formatting-rules` | todo | No sqlfluff peer; Rust formatter + `proof_format` check |
@@ -166,6 +166,28 @@ Recorded as a known gap below.
   about a stage it dropped.
 
 144 tests pass in `kumosql-sql`. **Task 2 is complete.**
+
+* **`sqlx`** (`kumosql-sql/src/sqlx.rs`) -- Dataform SQLX, from
+  `src/kumosql/sqlx.py`: block sections (`config`, `js`, `pre_operations`,
+  `post_operations`, and a Dataform test's `input "name"`) kept byte-for-byte,
+  SQL comment spans, `${...}` masking, opaque-token reporting, and the
+  verifying restore.
+
+  The masking is the interesting part. A `${...}` compiles to *arbitrary SQL
+  text*, so a rule cannot read it as an expression -- and the surrounding SQL
+  still has to parse, so the sentinel carries the connective around it
+  (`WHERE a > 0 ${when(incremental(), "AND b > 1")}` becomes
+  `WHERE a > 0 AND __sqlx_token_000__`).
+
+  **Restore verifies before it substitutes.** A parse that succeeded does not
+  prove the reader kept every expression: a rewrite could drop one, duplicate
+  one, or separate an expression from the connective it was written with, and
+  each of those turns an incremental filter into valid-looking SQL that filters
+  something else. So every sentinel is counted, a count other than one is an
+  error, and the connective is removed *together with* the sentinel -- leaving it
+  behind would duplicate it. Both of those were caught by the round-trip tests.
+
+170 tests pass in `kumosql-sql`.
 
 ### What task 2 deliberately does not do
 

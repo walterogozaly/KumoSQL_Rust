@@ -28,6 +28,7 @@ pub mod parse_check;
 pub mod rewrite;
 pub mod rewrites;
 pub mod scripts;
+pub mod sqlx;
 pub mod token;
 
 pub use literals::{canonical_literals, invalid_literal};
