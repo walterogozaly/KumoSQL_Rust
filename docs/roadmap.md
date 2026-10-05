@@ -110,9 +110,37 @@ to discover: `ORDER BY`/`LIMIT` live on `Query` not `Select`, `FILTER` is a
 field on `Function` not a node, windows live on `Function.over`, `ObjectName`
 parts are an enum, and `Query` is a struct not an enum.
 
-Still to do for task 2: `GROUP BY ALL` expansion (it parses but is not yet
-expanded into its keys, as `expand_group_by_all` does in Python), multi-statement
-script splitting, and `parse_check`.
+* **`normalize`** (`kumosql-sql/src/normalize.rs`) -- `expand_group_by_all`,
+  which spells `GROUP BY ALL` as the keys it infers before anything reasons
+  about it, plus the expression predicates it needs (aggregate / window /
+  subquery / column / unknown-function).
+* **`scripts`** (`kumosql-sql/src/scripts.rs`) -- the BigQuery script
+  splitter. A script is not SQL (`DECLARE`, `SET`, `BEGIN ... END`,
+  `IF ... THEN`, `FOR ... IN`, `CREATE PROCEDURE`), so it is split first and
+  each statement parsed on its own. Splitting is not flattening: a statement
+  inside `IF` or a procedure carries that on its `ScriptPart`.
+
+95 tests pass across the workspace.
+
+The script tests are ported from `tests/test_scripts.py` **with its exact
+expected statement texts and conditional flags**, because a splitter one
+statement off hands a caller a different set of queries to verify. Five real
+bugs were caught that way, none of which my own reading had predicted:
+
+1. statement text included the trailing `;` -- Python's `simple()` stops before it
+2. a comment between statements was absorbed into the next one, shifting both
+   its text and its reported line. The script lexer drops comments, which is why
+   the Python original's does; the shared tokenizer keeps them, which is right
+   for the rewrite layer
+3. `BEGIN TRANSACTION` was read as a block rather than a statement
+4. a procedure's `OPTIONS(...)`, and a `LANGUAGE js` body with no `BEGIN`,
+   left the splitter inside the procedure forever
+5. labels, a missing final semicolon, and stray keywords at top level
+
+Still to do for task 2: `parse_check` (`check_query` / `reading`) and the
+remaining BigQuery rewrites the Python original does in `bigquery_syntax.py`
+(pipe operators, `LIKE ALL UNNEST`, the `WITH(a AS 1)` expression,
+`DROP TABLE FUNCTION`, `GRAPH_TABLE`).
 
 ## Sequencing notes
 
