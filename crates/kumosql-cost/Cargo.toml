@@ -1,0 +1,18 @@
+[package]
+name = "kumosql-cost"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cost model, cardinality estimation and join ordering"
+
+[dependencies]
+  kumosql-sql = { workspace = true }
+  serde = { workspace = true }
+  serde_json = { workspace = true }
+  thiserror = { workspace = true }
+  anyhow = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"

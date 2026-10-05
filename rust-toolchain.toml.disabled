@@ -1,0 +1,10 @@
+# Pinned to the stable channel rather than an exact version string: naming an
+# exact version makes rustup re-sync its channel manifest on every invocation,
+# which fails on this machine's flaky link to static.rust-lang.org. The exact
+# version that this resolved to (1.99.0) is recorded in docs/toolchain.md and
+# in Cargo.lock.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
+targets = ["x86_64-pc-windows-msvc"]

@@ -1,0 +1,13 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Local state and credentials
+*.local
+.env
+.env.*
+
+# Python-side artefacts that must never be committed to this repo.
+# The Python reference repo is read-only; anything copied out of it for
+# study stays out of git unless it is a declared fixture.
+/reference-repo/

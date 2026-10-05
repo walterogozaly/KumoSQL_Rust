@@ -1,0 +1,24 @@
+[package]
+name = "kumosql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Public facade, mirroring the Python package's public API"
+
+[dependencies]
+  kumosql-bq = { workspace = true }
+  kumosql-cost = { workspace = true }
+  kumosql-exec = { workspace = true }
+  kumosql-pipeline = { workspace = true }
+  kumosql-project = { workspace = true }
+  kumosql-rules = { workspace = true }
+  kumosql-sql = { workspace = true }
+  kumosql-verify = { workspace = true }
+  serde = { workspace = true }
+  serde_json = { workspace = true }
+  anyhow = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"

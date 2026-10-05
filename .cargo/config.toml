@@ -1,0 +1,30 @@
+# Cargo configuration for KumoSQL_Rust.
+#
+# ---------------------------------------------------------------------------
+# MACHINE-SPECIFIC WORKAROUND -- read before removing.
+#
+# This Windows host enforces an Application Control policy that refuses to
+# *execute* binaries built under `C:\Users\walte\Desktop\...`, which is where
+# this repository lives. Building succeeds, but `cargo test` and `cargo run`
+# fail with:
+#
+#   An Application Control policy has blocked this file. (os error 4551)
+#
+# Redirecting cargo's output directory outside the Desktop tree fixes it, and
+# costs nothing but disk locality. The same applies to this file's own copy
+# if you move the repository.
+#
+# On a machine without that policy, delete this file: the default
+# `./target` layout works.
+#
+# If you prefer not to keep a machine-specific path in version control, remove
+# the `[build] target-dir` line below and instead export the variable in your
+# shell:
+#
+#   export CARGO_TARGET_DIR="C:/Users/walte/AppData/Local/Temp/kumosql-rust-target"
+#
+# It must be set for every cargo invocation, including `cargo test`, because
+# the blocked file is the compiled test binary.
+# ---------------------------------------------------------------------------
+[build]
+target-dir = "C:/Users/walte/AppData/Local/Temp/kumosql-rust-target"

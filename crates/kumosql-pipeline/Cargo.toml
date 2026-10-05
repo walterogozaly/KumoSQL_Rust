@@ -1,0 +1,21 @@
+[package]
+name = "kumosql-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lineage, pipeline graph, pipeline analysis and incremental models"
+
+[dependencies]
+  kumosql-sql = { workspace = true }
+  kumosql-exec = { workspace = true }
+  serde = { workspace = true }
+  serde_json = { workspace = true }
+  thiserror = { workspace = true }
+  anyhow = { workspace = true }
+  walkdir = { workspace = true }
+  indexmap = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"

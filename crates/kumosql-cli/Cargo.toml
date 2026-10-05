@@ -1,0 +1,27 @@
+[package]
+name = "kumosql-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line interface"
+
+[dependencies]
+  kumosql = { workspace = true }
+  kumosql-bq = { workspace = true }
+  kumosql-cost = { workspace = true }
+  kumosql-eval = { workspace = true }
+  kumosql-project = { workspace = true }
+  kumosql-ui = { workspace = true }
+  clap = { workspace = true }
+  serde_json = { workspace = true }
+  anyhow = { workspace = true }
+  walkdir = { workspace = true }
+
+[[bin]]
+name = "kumosql"
+path = "src/main.rs"
+
+[lints.rust]
+missing_docs = "warn"

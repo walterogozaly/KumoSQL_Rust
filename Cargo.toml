@@ -1,0 +1,79 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kumosql",
+    "crates/kumosql-bq",
+    "crates/kumosql-cli",
+    "crates/kumosql-cost",
+    "crates/kumosql-eval",
+    "crates/kumosql-exec",
+    "crates/kumosql-pipeline",
+    "crates/kumosql-project",
+    "crates/kumosql-rules",
+    "crates/kumosql-sql",
+    "crates/kumosql-ui",
+    "crates/kumosql-verify",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+repository = "https://github.com/walterogozaly/KumoSQL_Rust"
+description = "Deterministic, test-verified transformations for BigQuery SQL (Rust port of KumoSQL)"
+
+[workspace.dependencies]
+# Internal crates
+kumosql = { path = "crates/kumosql", version = "0.1.0" }
+kumosql-bq = { path = "crates/kumosql-bq", version = "0.1.0" }
+kumosql-cost = { path = "crates/kumosql-cost", version = "0.1.0" }
+kumosql-eval = { path = "crates/kumosql-eval", version = "0.1.0" }
+kumosql-exec = { path = "crates/kumosql-exec", version = "0.1.0" }
+kumosql-pipeline = { path = "crates/kumosql-pipeline", version = "0.1.0" }
+kumosql-project = { path = "crates/kumosql-project", version = "0.1.0" }
+kumosql-rules = { path = "crates/kumosql-rules", version = "0.1.0" }
+kumosql-sql = { path = "crates/kumosql-sql", version = "0.1.0" }
+kumosql-ui = { path = "crates/kumosql-ui", version = "0.1.0" }
+kumosql-verify = { path = "crates/kumosql-verify", version = "0.1.0" }
+
+# Error handling and serialisation.
+# Exact versions are pinned in Cargo.lock; see docs/toolchain.md.
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# SQL parsing. sqlparser-rs is the base; BigQuery/GoogleSQL shapes it cannot
+# read are handled by custom extensions in kumosql-sql.
+sqlparser = "0.59"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Filesystem traversal
+walkdir = "2"
+dirs = "6"
+
+# Concurrency
+rayon = "1"
+
+# Ordered maps. Lineage and scope stores depend on deterministic iteration
+# order, so they must not fall back to a hash map's arbitrary ordering.
+indexmap = "2"
+
+# Local browser UI (task 19)
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+
+# Verification backends. Both compile native C++ and are added to the crates
+# that need them in tasks 8 (z3) and 12 (duckdb), not globally, so that early
+# test runs do not pay for a C++ build.
+# z3 = "0.12"
+# duckdb = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"

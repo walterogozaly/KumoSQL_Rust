@@ -1,0 +1,16 @@
+[package]
+name = "kumosql-sql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "BigQuery/GoogleSQL AST, hybrid parser and SQL rendering"
+
+[dependencies]
+  sqlparser = { workspace = true }
+  serde = { workspace = true }
+  thiserror = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"
