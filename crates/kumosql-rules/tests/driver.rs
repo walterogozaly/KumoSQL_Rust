@@ -170,11 +170,27 @@ fn splicing_keeps_the_bytes_a_rule_did_not_change() {
 }
 
 #[test]
-fn splicing_keeps_a_source_comment() {
+fn a_splice_that_would_lose_a_comment_is_refused() {
+    // The rendered statement has no comment in it, so splicing it in would drop
+    // one. That is refused rather than applied: a lost comment is a changed
+    // query, and it is the kind of change no downstream check would notice.
     let source = "SELECT keep, -- a note\n  a FROM t";
     let rendered = "SELECT kept, a FROM t";
+    let error = splice_statement(source, rendered).expect_err("must refuse");
+    assert!(
+        error.contains("comment could not be retained"),
+        "unexpected message: {error}"
+    );
+}
+
+#[test]
+fn a_splice_that_keeps_a_comment_succeeds() {
+    // The rendered statement still carries the comment, so nothing is lost.
+    let source = "SELECT keep, -- a note\n  a FROM t";
+    let rendered = "SELECT kept, -- a note\n  a FROM t";
     let spliced = splice_statement(source, rendered).expect("splice");
-    assert!(spliced.contains("-- a note"), "comment lost: {spliced}");
+    assert!(spliced.contains("-- a note"), "{spliced}");
+    assert!(spliced.contains("kept"), "{spliced}");
 }
 
 #[test]

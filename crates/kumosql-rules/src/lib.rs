@@ -681,29 +681,51 @@ pub fn splice_statement(source: &str, rendered: &str) -> Result<String, String> 
         .collect();
 
     let operations = token_diff(&source_keys, &target_keys);
-    let mut edits: Vec<(usize, usize, String)> = Vec::new();
 
+    // Applied forward with a cursor, because a changed region may insert, delete
+    // or replace, and only this walk handles all three. Applying in reverse over
+    // start offsets breaks when an insertion shares its start with a deletion.
+    let mut result = String::with_capacity(source.len());
+    let mut cursor = 0usize;
     for (i1, i2, j1, j2) in operations {
-        if i1 >= i2 || j1 >= j2 {
-            // An insertion or a deletion has no target text (or no source
-            // text); handled by the single-token cases below.
-            continue;
+        let start = if i1 < source_tokens.len() {
+            source_tokens[i1].span.start
+        } else {
+            source.len()
+        };
+        // Never rewind: a degenerate insertion reports the same start as the
+        // region before it.
+        let mut start = start.max(cursor);
+        if j1 == j2 {
+            // A pure deletion leaves the whitespace that surrounded it behind,
+            // so `WHERE 1 = 1` removed from the end would leave a trailing
+            // space. Take the whitespace on both sides with it.
+            let before = &source[..start];
+            let trimmed = before.trim_end();
+            start -= before.len() - trimmed.len();
+            start = start.max(cursor);
         }
-        // Replace exactly the changed tokens, keeping the spacing *between*
-        // them and the spacing around the region. Using the rendered text
-        // rather than the joined tokens is what preserves the layout.
-        let start = source_tokens[i1].span.start;
-        let end = source_tokens[i2 - 1].span.end;
-        let replacement = &rendered[target_tokens[j1].span.start..target_tokens[j2 - 1].span.end];
-        edits.push((start, end.min(source.len()), replacement.to_string()));
-    }
-
-    let mut result = source.to_string();
-    for (start, end, replacement) in edits.into_iter().rev() {
-        if start <= end && end <= result.len() {
-            result.replace_range(start..end, &replacement);
+        result.push_str(&source[cursor..start.min(source.len())]);
+        if j1 < j2 && j2 <= target_tokens.len() {
+            result
+                .push_str(&rendered[target_tokens[j1].span.start..target_tokens[j2 - 1].span.end]);
+        }
+        cursor = if i2 > i1 && i2 <= source_tokens.len() {
+            cursor.max(source_tokens[i2 - 1].span.end)
+        } else {
+            cursor.max(start)
+        };
+        // A deletion at the very end of the source would otherwise leave the
+        // whitespace that preceded the removed text, so the result ends in a
+        // space. Only the trailing case is trimmed: whitespace *between* a
+        // deletion and the next kept token still has to be emitted, or the two
+        // words run together.
+        if j1 == j2 && i2 >= source_tokens.len() {
+            let trimmed = source[..cursor].trim_end();
+            cursor = trimmed.len();
         }
     }
+    result.push_str(&source[cursor.min(source.len())..]);
 
     let mut before = sql_comments(source);
     let mut after = sql_comments(&result);
@@ -750,8 +772,11 @@ fn token_diff(
         }
         let (i_start, j_start) = (i, j);
         // Extend the changed region while the alignment stays off the diagonal.
+        // The comparison is strict: on a tie, advancing the target keeps the
+        // region from ending by running out of target tokens, which would split
+        // it into a degenerate pair the caller has to drop.
         while i < rows && j < cols && source[i] != target[j] {
-            if lcs[i + 1][j] >= lcs[i][j + 1] {
+            if lcs[i + 1][j] > lcs[i][j + 1] {
                 i += 1;
             } else {
                 j += 1;

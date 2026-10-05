@@ -8,7 +8,7 @@
 //! [`truth_value`] answers a predicate's truth only when it can be decided with
 //! certainty. Two INT64 literals compare exactly; any other numeric pair is
 //! decided only when the texts are identical, because BigQuery may coerce INT64
-//! to FLOAT64 and lose precision — so `9007199254740993 = 9007199254740992` is
+//! to FLOAT64 and lose precision -so `9007199254740993 = 9007199254740992` is
 //! *not* folded here even though an i64 says it should be. Two string literals
 //! are equal only when their text is identical and carries no escapes.
 //!
@@ -268,27 +268,38 @@ impl RewriteRule for RemoveTrivialPredicates {
         let mut changes = 0usize;
 
         // WHERE, then HAVING (only with a GROUP BY), then QUALIFY.
-        if let Some(selection) = query.selection_mut() {
-            let (simplified, count) = simplify_predicate(selection);
-            changes += count;
-            if truth_value(&simplified) == Some(true) {
-                *selection = Expr::Literal(Literal::Boolean(true));
-                // The clause itself goes; the caller re-renders.
-                changes += 1;
-            } else {
+        // A `WHERE TRUE` is not "WHERE TRUE"; the clause goes.
+        let drop_selection = query
+            .selection_mut()
+            .map(|selection| {
+                let (simplified, count) = simplify_predicate(selection);
+                changes += count;
                 *selection = simplified;
-            }
+                truth_value(selection) == Some(true)
+            })
+            .unwrap_or(false);
+        if drop_selection && let Some(select) = query.as_select_mut() {
+            select.clear_selection();
+            changes += 1;
         }
 
-        if let Some(having) = query.having_mut() {
-            let (simplified, count) = simplify_predicate(having);
-            changes += count;
-            if truth_value(&simplified) == Some(true) {
-                *having = Expr::Literal(Literal::Boolean(true));
-                changes += 1;
-            } else {
+        // `HAVING TRUE` is only dropped when a `GROUP BY` is present: without
+        // one, `HAVING` is what makes the query an aggregate.
+        let drop_having = query
+            .having_mut()
+            .map(|having| {
+                let (simplified, count) = simplify_predicate(having);
+                changes += count;
                 *having = simplified;
-            }
+                truth_value(having) == Some(true)
+            })
+            .unwrap_or(false);
+        if drop_having
+            && let Some(select) = query.as_select_mut()
+            && select.group_by.is_some()
+        {
+            select.clear_having();
+            changes += 1;
         }
 
         if let Some(qualify) = query.qualify_mut() {

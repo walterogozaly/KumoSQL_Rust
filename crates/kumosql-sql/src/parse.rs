@@ -985,11 +985,35 @@ fn convert_expr(expr: &sp::Expr) -> Result<Expr> {
         }
         E::Value(value) => convert_value(&value.value)?,
 
-        E::BinaryOp { left, op, right } => Expr::Binary {
-            op: convert_binary_op(op)?,
-            left: Box::new(convert_expr(left)?),
-            right: Box::new(convert_expr(right)?),
-        },
+        E::BinaryOp { left, op, right } => {
+            let op = convert_binary_op(op)?;
+            let left = convert_expr(left)?;
+            let right = convert_expr(right)?;
+            // AND and OR chains are flattened into the n-ary nodes, matching
+            // `exp.And`: a rule reading a conjunction as a set of conjuncts
+            // cannot see them inside a left-leaning binary tree.
+            match op {
+                BinaryOp::And => match left {
+                    Expr::And(mut items) => {
+                        items.push(right);
+                        Expr::And(items)
+                    }
+                    other => Expr::And(vec![other, right]),
+                },
+                BinaryOp::Or => match left {
+                    Expr::Or(mut items) => {
+                        items.push(right);
+                        Expr::Or(items)
+                    }
+                    other => Expr::Or(vec![other, right]),
+                },
+                _ => Expr::Binary {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+            }
+        }
         E::UnaryOp { op, expr } => Expr::Unary {
             op: match op {
                 sp::UnaryOperator::Not => UnaryOp::Not,

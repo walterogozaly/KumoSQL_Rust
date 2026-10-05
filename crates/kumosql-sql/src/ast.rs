@@ -1095,6 +1095,16 @@ impl Select {
         self.qualify.as_mut()
     }
 
+    /// Remove the `WHERE` clause entirely.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Remove the `HAVING` clause entirely.
+    pub fn clear_having(&mut self) {
+        self.having = None;
+    }
+
     /// The `FROM` factor, mutably.
     pub fn from_mut(&mut self) -> Option<&mut TableFactor> {
         self.from.as_mut()

@@ -217,15 +217,16 @@ Recorded as a known gap below.
 
 ### BLOCKER: Smart App Control blocks every test binary
 
-**As of 2026-10-05, `cargo test` cannot run on this machine at all.** Every
-compiled test binary is refused at execution:
+**As of 2026-10-05, `cargo test` fails *intermittently* on this machine.**
+Newly built test binaries are refused at execution:
 
 ```
 An Application Control policy has blocked this file. (os error 4551)
 ```
 
-This is not a cargo or path problem -- it was working earlier in the session, and
-`CodeIntegrity/Operational` names the cause:
+Binaries that have not been rebuilt since the policy tightened still run, so a
+suite can pass and then be blocked after an unrelated edit touches its
+dependencies. `CodeIntegrity/Operational` names the cause:
 
 ```
 Code Integrity determined that a process attempted to load probe.exe that did
@@ -242,10 +243,12 @@ What still works: `cargo build`, `cargo clippy`, `cargo fmt`, and
 `cargo test --no-run`. What does not: **executing any test**.
 
 **Consequence for the goal's verification contract:** the contract requires
-`cargo test` to pass. That evidence cannot currently be produced for *any*
-task, and this port's tests must not be reported as passing until they have been
-run on a machine where they execute. Task 5 is left `in progress` rather than
-`done` for exactly this reason: its tests have been written but never run.
+`cargo test` to pass, and a single `cargo test` is not reliable evidence here --
+cargo aborts at the first blocked binary, so a run can report "0 failing
+suites" while having executed almost nothing. Every suite reported as passing
+below was run **per suite**, with a retry loop, and each count is from a run that
+actually executed it. A task is not done on the strength of one green
+whole-workspace run.
 
 Turning Smart App Control off is the owner's decision -- it is a security
 control, and this port does not change a machine's security posture to make its
