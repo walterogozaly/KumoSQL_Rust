@@ -37,6 +37,7 @@ use kumosql_sql::sqlx::{
 };
 use kumosql_sql::token::{Token, TokenKind, tokenize};
 
+pub mod cleanup;
 pub mod registry;
 
 /// One statement-level parse or transformation diagnostic.
@@ -209,6 +210,49 @@ pub fn apply_rule(rule: &dyn RewriteRule, sql: &str) -> RuleOutput {
         return apply_rule_to_script(rule, sql);
     }
     apply_rule_to_sql(rule, sql)
+}
+
+/// Apply several rules in order, stopping at the first one that does not run
+/// cleanly.
+///
+/// A rule that failed must not be followed by another: its output is the input
+/// unchanged, so the next rule would be working from a tree the first one had
+/// already changed in memory and then abandoned. Stopping keeps the reported
+/// diagnostic the one the caller needs to see.
+pub fn apply_rules(rules: &[&dyn RewriteRule], sql: &str) -> RuleOutput {
+    let mut current = sql.to_string();
+    let mut statements = 0usize;
+    let mut changed_statements = 0usize;
+    let mut changes = 0usize;
+    let mut diagnostics = Vec::new();
+
+    for rule in rules {
+        let output = apply_rule(*rule, &current);
+        statements = output.statements;
+        changed_statements += output.changed_statements;
+        changes += output.changes;
+        diagnostics.extend(output.diagnostics.clone());
+        if !output.success() {
+            return RuleOutput {
+                sql: sql.to_string(),
+                statements,
+                changed_statements: 0,
+                changes: 0,
+                remaining: output.remaining,
+                diagnostics,
+            };
+        }
+        current = output.sql;
+    }
+
+    RuleOutput {
+        sql: current,
+        statements,
+        changed_statements,
+        changes,
+        remaining: 0,
+        diagnostics,
+    }
 }
 
 /// Apply `rule` to plain SQL.

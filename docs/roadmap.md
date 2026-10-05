@@ -215,6 +215,42 @@ Recorded as a known gap below.
 
 170 tests pass in `kumosql-sql`, 23 in `kumosql-rules`.
 
+### BLOCKER: Smart App Control blocks every test binary
+
+**As of 2026-10-05, `cargo test` cannot run on this machine at all.** Every
+compiled test binary is refused at execution:
+
+```
+An Application Control policy has blocked this file. (os error 4551)
+```
+
+This is not a cargo or path problem -- it was working earlier in the session, and
+`CodeIntegrity/Operational` names the cause:
+
+```
+Code Integrity determined that a process attempted to load probe.exe that did
+not meet the Enterprise signing level requirements or violated code integrity
+policy (Policy ID {0283ac0f-fff1-49ae-ada1-8a933130cad6}).
+```
+
+`Win32_DeviceGuard.CodeIntegrityPolicyEnforcementStatus` is `2` -- enforced. This
+is **Smart App Control**, which blocks unsigned binaries by reputation. Rust test
+binaries are unsigned, and copying one to `Downloads`, `%TEMP%` or
+`Windows\Temp` does not help.
+
+What still works: `cargo build`, `cargo clippy`, `cargo fmt`, and
+`cargo test --no-run`. What does not: **executing any test**.
+
+**Consequence for the goal's verification contract:** the contract requires
+`cargo test` to pass. That evidence cannot currently be produced for *any*
+task, and this port's tests must not be reported as passing until they have been
+run on a machine where they execute. Task 5 is left `in progress` rather than
+`done` for exactly this reason: its tests have been written but never run.
+
+Turning Smart App Control off is the owner's decision -- it is a security
+control, and this port does not change a machine's security posture to make its
+own tests pass. Recorded here, and in `docs/parity-notes.md`.
+
 ### What task 4 deliberately does not do
 
 - **No recovery fallback.** A parse failure is reported; the Python original

@@ -1079,6 +1079,56 @@ pub enum SelectAs {
     Value,
 }
 
+impl Select {
+    /// The `WHERE` clause, mutably.
+    pub fn selection_mut(&mut self) -> Option<&mut Expr> {
+        self.selection.as_mut()
+    }
+
+    /// The `HAVING` clause, mutably.
+    pub fn having_mut(&mut self) -> Option<&mut Expr> {
+        self.having.as_mut()
+    }
+
+    /// The `QUALIFY` clause, mutably.
+    pub fn qualify_mut(&mut self) -> Option<&mut Expr> {
+        self.qualify.as_mut()
+    }
+
+    /// The `FROM` factor, mutably.
+    pub fn from_mut(&mut self) -> Option<&mut TableFactor> {
+        self.from.as_mut()
+    }
+
+    /// Every `FROM` factor, mutably, including those inside joins.
+    ///
+    /// A join's inputs are separate table references, and a rule that read
+    /// only the top of the join would miss half of them.
+    pub fn factors_mut(&mut self) -> Vec<&mut TableFactor> {
+        match self.from.as_mut() {
+            Some(from) => factor_and_descendants_mut(from),
+            None => Vec::new(),
+        }
+    }
+
+    /// The projection list, mutably.
+    pub fn projections_mut(&mut self) -> &mut Vec<Expr> {
+        &mut self.projections
+    }
+}
+
+/// A table factor and everything inside it, `factor` itself first.
+fn factor_and_descendants_mut(factor: &mut TableFactor) -> Vec<&mut TableFactor> {
+    match factor {
+        TableFactor::Join { left, right, .. } => {
+            let mut out = factor_and_descendants_mut(left.as_mut());
+            out.extend(factor_and_descendants_mut(right.as_mut()));
+            out
+        }
+        other => vec![other],
+    }
+}
+
 impl fmt::Display for Select {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SELECT")?;
@@ -1205,6 +1255,31 @@ impl Query {
         }
     }
 
+    /// The `WITH` clause, mutably, if this query has one.
+    pub fn with_clause_mut(&mut self) -> Option<&mut With> {
+        match self {
+            Query::Select { with, .. }
+            | Query::SetOperation { with, .. }
+            | Query::Values { with, .. }
+            | Query::Pipe { with, .. } => with.as_mut(),
+        }
+    }
+
+    /// Replace the `WITH` clause, dropping it when given `None`.
+    ///
+    /// A `WITH` left with no definitions is removed rather than kept empty,
+    /// because `WITH` with nothing in it is not what the rule meant.
+    pub fn set_with_clause(&mut self, clause: Option<With>) {
+        let empty = clause.as_ref().is_some_and(|with| with.ctes.is_empty());
+        let clause = clause.filter(|_| !empty);
+        match self {
+            Query::Select { with, .. }
+            | Query::SetOperation { with, .. }
+            | Query::Values { with, .. }
+            | Query::Pipe { with, .. } => *with = clause,
+        }
+    }
+
     /// The `SELECT` body, when this query is a plain select.
     pub fn as_select(&self) -> Option<&Select> {
         match self {
@@ -1221,6 +1296,37 @@ impl Query {
         match self {
             Query::Select { body, .. } => Some(body),
             _ => None,
+        }
+    }
+
+    /// The `WHERE` clause of the `SELECT` body, mutably.
+    ///
+    /// A set operation has no single `WHERE`, so this returns `None` rather
+    /// than a fabricated one: a rule that got one would edit the wrong place.
+    pub fn selection_mut(&mut self) -> Option<&mut Expr> {
+        self.as_select_mut()?.selection_mut()
+    }
+
+    /// The `HAVING` clause of the `SELECT` body, mutably.
+    pub fn having_mut(&mut self) -> Option<&mut Expr> {
+        self.as_select_mut()?.having_mut()
+    }
+
+    /// The `QUALIFY` clause of the `SELECT` body, mutably.
+    pub fn qualify_mut(&mut self) -> Option<&mut Expr> {
+        self.as_select_mut()?.qualify_mut()
+    }
+
+    /// The projection list of the `SELECT` body, mutably.
+    pub fn projections_mut(&mut self) -> Option<&mut Vec<Expr>> {
+        Some(&mut self.as_select_mut()?.projections)
+    }
+
+    /// Every `FROM` factor of the `SELECT` body, mutably, joins included.
+    pub fn factors_mut(&mut self) -> Vec<&mut TableFactor> {
+        match self.as_select_mut() {
+            Some(select) => select.factors_mut(),
+            None => Vec::new(),
         }
     }
 
@@ -1607,6 +1713,18 @@ impl Statement {
             Statement::CreateTableAs { query, .. } => Some(query),
             Statement::CreateViewAs { query, .. } => Some(query),
             Statement::Insert { query, .. } => query.as_deref(),
+            Statement::Update { .. } | Statement::Delete { .. } => None,
+            Statement::Merge(_) | Statement::Command { .. } => None,
+        }
+    }
+
+    /// The query this statement is ultimately about, mutably.
+    pub fn top_level_query_mut(&mut self) -> Option<&mut Query> {
+        match self {
+            Statement::Query(query) => Some(query),
+            Statement::CreateTableAs { query, .. } => Some(query),
+            Statement::CreateViewAs { query, .. } => Some(query),
+            Statement::Insert { query, .. } => query.as_deref_mut(),
             Statement::Update { .. } | Statement::Delete { .. } => None,
             Statement::Merge(_) | Statement::Command { .. } => None,
         }
