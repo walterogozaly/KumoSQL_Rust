@@ -63,8 +63,27 @@ The six prover- and DuckDB-dependent tests in that Python file are listed as
 `pending` in `crates/kumosql-sql/tests/literals.rs` with the task each needs,
 rather than dropped.
 
-Still to do for task 2: the hybrid parse pipeline (token-level rewrites plus
-`sqlparser-rs` plus marker resolution) and `parse_check`.
+* **`token`** (`kumosql-sql/src/token.rs`) -- a BigQuery-aware tokenizer, used
+  only by the rewrites. It exists because probing `sqlparser-rs` 0.59 showed it
+  reads most BigQuery but refuses `COUNT(x WHERE c)`, `STRUCT()`,
+  `GROUP BY ALL` and script statements -- the same class of gap the Python
+  original works around for sqlglot.
+* **`rewrite`** (`kumosql-sql/src/rewrite.rs`) -- the text rewrites that close
+  that gap: the aggregate filter in both directions, and an outright refusal of
+  `STRUCT<>()`, which both parsers would otherwise read as a comparison.
+
+43 tests pass across the crate.
+
+The rewrite tests caught four real bugs on first run: a doubled `)`, `FROM (`
+mistaken for a call so a subquery's `WHERE` got rewritten, a broken `FILTER`
+reconstruction, and BigQuery's doubled-backtick quoting being misread. The
+`__KUMO_AGG_FILTER__` marker is also restored, for the same reason the Python
+original marks its rewrites -- without it, a query that already used the
+standard `FILTER` is indistinguishable from one this module produced.
+
+Still to do for task 2: wiring the pipeline together (`parse_statements`:
+literals -> rewrites -> `sqlparser-rs` -> AST), `GROUP BY ALL`, script
+statements, and `parse_check`.
 
 ## Sequencing notes
 
